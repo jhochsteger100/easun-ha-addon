@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 echo "Starte EASun Python Reader..."
 python3 /easun_reader.py \
   --mqtt \
