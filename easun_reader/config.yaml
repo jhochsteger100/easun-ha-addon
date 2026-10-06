@@ -1,6 +1,6 @@
 name: "EASun SMT-III Reader"
 description: "Liest den EASun Wechselrichter im Container aus"
-version: "1.0.0"
+version: "1.0.1"
 slug: "easun_smt_reader"
 arch:
   - aarch64
