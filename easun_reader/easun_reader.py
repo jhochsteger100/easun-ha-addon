@@ -355,7 +355,6 @@ SENSORS = {
     },
 
     # Generation
-    # NOTE: The reverse-engineered protocol says the unit is likely kWh.
     "pv_energy_today": {
         "name": "PV energy today",
         "unit": "kWh",
@@ -379,6 +378,34 @@ SENSORS = {
         "unit": "kWh",
         "device_class": "energy",
         "state_class": "total_increasing",
+    },
+
+    # --- HIER SIND DIE NEUEN EXTRA-SENSOREN ---
+    "fan_1_speed_raw": {
+        "name": "Luefter 1 Geschwindigkeit",
+        "entity_category": "diagnostic",
+        "state_class": "measurement",
+    },
+    "fan_2_speed_raw": {
+        "name": "Luefter 2 Geschwindigkeit",
+        "entity_category": "diagnostic",
+        "state_class": "measurement",
+    },
+    "battery_charging_current_tentative": {
+        "name": "Batterie Ladestrom (Details)",
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+    },
+    "battery_discharging_current_tentative": {
+        "name": "Batterie Entladestrom (Details)",
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+    },
+    "pv_operating_mode_tentative": {
+        "name": "PV Betriebsmodus",
+        "entity_category": "diagnostic",
     },
 
     # Diagnostics
@@ -412,7 +439,6 @@ def create_mqtt_client(args):
         )
         sys.exit(2)
 
-    # Compatible with both paho-mqtt 1.x and 2.x.
     try:
         client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -543,7 +569,6 @@ def parse_args():
         help="Read once and exit",
     )
 
-    # MQTT options
     parser.add_argument("--mqtt-host")
     parser.add_argument("--mqtt-port", type=int, default=1883)
     parser.add_argument("--mqtt-user")
@@ -594,8 +619,6 @@ def main():
         mqtt_client = create_mqtt_client(args)
         publish_discovery(mqtt_client, args)
 
-    # Keep the last known values so that one failed optional command doesn't
-    # make unrelated Home Assistant entities lose their state.
     state = {}
 
     try:
@@ -608,14 +631,12 @@ def main():
             timeout=2,
         ) as ser:
 
-            # Discard anything generated while opening the serial port.
             time.sleep(0.2)
             ser.reset_input_buffer()
 
             while True:
                 data, successful = poll_inverter(ser)
 
-                # Merge successfully obtained values with the previous state.
                 for key, value in data.items():
                     if key not in ("_raw", "_errors"):
                         state[key] = value
