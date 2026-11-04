@@ -5,16 +5,10 @@ import json
 import os
 import sys
 import time
-import threading
 from datetime import datetime, timezone
 
 import serial
 
-# ---------------------------------------------------------------------------
-# Globale Variablen
-# ---------------------------------------------------------------------------
-# Schützt die serielle Schnittstelle vor gleichzeitigem Lesen/Schreiben
-serial_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Protocol parsing
@@ -50,6 +44,8 @@ def parse_hop(response):
         "dc_bus_voltage": int(f[5]),
         "rated_power": int(f[6]),
         "output_current": float(f[7]),
+
+        # Not fully decoded by the reverse-engineered protocol.
         "output_status_code": f[8],
     }
 
@@ -77,9 +73,15 @@ def parse_hbat(response):
         "battery_series_count": int(f[0]),
         "battery_voltage": float(f[1]),
         "battery_capacity": int(f[2]),
+
+        # These two meanings are currently marked tentative in the
+        # reverse-engineered documentation.
         "battery_charging_current_tentative": int(f[3]),
         "battery_discharging_current_tentative": int(f[4]),
+
         "battery_dc_bus_voltage": int(f[5]),
+
+        # Keep the undecoded values available for investigation.
         "battery_flags_1": f[6],
         "battery_flags_2": f[7],
     }
@@ -93,8 +95,15 @@ def parse_hpv(response):
         "pv_voltage": float(f[0]),
         "pv_current": float(f[1]),
         "pv_power": int(f[2]),
+
+        # f[3] and f[4] are not sufficiently understood.
+
         "pv_operating_mode_tentative": int(f[5]),
         "pv_max_voltage": float(f[6]),
+
+        # f[7] has tentatively been identified as a PV temperature, but
+        # HTEMP provides better-defined temperature fields.
+
         "pv_max_power": int(f[8]),
     }
 
@@ -107,6 +116,8 @@ def parse_htemp(response):
         "pv_temperature": int(f[0]),
         "inverter_temperature": int(f[1]),
         "boost_temperature": int(f[2]),
+
+        # Tentative/unknown values retained as diagnostics.
         "fan_state_tentative": int(f[3]),
         "secondary_temperature_tentative": int(f[4]),
         "fan_1_speed_raw": int(f[5]),
@@ -119,9 +130,10 @@ def parse_hgen(response):
     f = fields(response)
     require_count("HGEN", f, 7)
 
+    # Protocol research indicates these generation counters are most likely kWh.
     return {
-        "inverter_date": f[0],
-        "inverter_time": f[1],
+        "inverter_date": f[0],       # YYMMDD
+        "inverter_time": f[1],       # HH:MM
         "pv_energy_today": float(f[2]),
         "pv_energy_month": float(f[3]),
         "pv_energy_year": float(f[4]),
@@ -137,6 +149,8 @@ def parse_himsg1(response):
     return {
         "software_version": f[0],
         "software_date": f[1],
+
+        # Exact meaning not yet completely established.
         "firmware_variant": f[2],
     }
 
@@ -151,29 +165,6 @@ COMMANDS = {
     "HIMSG1": parse_himsg1,
 }
 
-# ---------------------------------------------------------------------------
-# Voltronic Command / CRC Control
-# ---------------------------------------------------------------------------
-
-def crc16_voltronic(cmd: str) -> bytes:
-    """Berechnet die Voltronic/EASun RS232 CRC-Prüfsumme für Steuerbefehle."""
-    crc = 0x0000
-    for char in cmd.encode('ascii'):
-        crc = (crc ^ (ord(char) << 8)) & 0xFFFF
-        for _ in range(8):
-            if crc & 0x8000:
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
-    
-    high = (crc >> 8) & 0xFF
-    low = crc & 0xFF
-    
-    # Sonderzeichen-Ersetzung gemäß Voltronic-Protokoll
-    if high in [0x0A, 0x0D, 0x28]: high += 1
-    if low in [0x0A, 0x0D, 0x28]: low += 1
-    
-    return cmd.encode('ascii') + bytes([high, low]) + b'\r'
 
 # ---------------------------------------------------------------------------
 # Serial communication
@@ -181,8 +172,8 @@ def crc16_voltronic(cmd: str) -> bytes:
 
 def query(ser, command):
     ser.reset_input_buffer()
-    request = crc16_voltronic(command) if command not in COMMANDS else (command + "\r").encode("ascii")
-    
+
+    request = (command + "\r").encode("ascii")
     ser.write(request)
     ser.flush()
 
@@ -212,6 +203,7 @@ def poll_inverter(ser):
 
             values = parser(response)
             result.update(values)
+
             successful += 1
 
         except Exception as exc:
@@ -226,52 +218,9 @@ def poll_inverter(ser):
         result["_errors"] = errors
 
     result["timestamp"] = datetime.now(timezone.utc).isoformat()
+
     return result, successful
 
-# ---------------------------------------------------------------------------
-# MQTT on_message Callback (Für Steuerbefehle)
-# ---------------------------------------------------------------------------
-
-def on_message(client, userdata, msg):
-    """Wird aufgerufen, wenn Home Assistant den Schalter betätigt."""
-    try:
-        payload = msg.payload.decode('utf-8')
-        args = userdata.get("args")
-        ser = userdata.get("ser")
-
-        if not ser or not ser.is_open:
-            print("[EASun Reader] Serial port noch nicht offen, ignoriere Befehl.", file=sys.stderr)
-            return
-
-        print(f"[EASun Reader] Schaltbefehl via MQTT erhalten: {payload}")
-
-        if payload == "ON":
-            # SBU Modus (Solar/Battery/Utility) -> Wechselrichter Aktiv
-            command = "POP02"
-        elif payload == "OFF":
-            # Utility First Modus -> Wechselrichter Standby (Eigenverbrauch minimal)
-            command = "POP00"
-        else:
-            print(f"[EASun Reader] Unbekannter Befehl: {payload}", file=sys.stderr)
-            return
-
-        cmd_bytes = crc16_voltronic(command)
-
-        # Exklusiver Zugriff auf die serielle Schnittstelle
-        with serial_lock:
-            ser.reset_input_buffer()
-            ser.write(cmd_bytes)
-            ser.flush()
-            time.sleep(0.2)
-            reply = ser.read_until(b"\r")
-            print(f"[EASun Reader] Antwort vom Inverter auf {command}: {reply}")
-
-        # Rückmeldung an Home Assistant senden, dass der Schalter erfolgreich umgelegt wurde
-        state_topic = f"{args.mqtt_topic}/switch/state"
-        client.publish(state_topic, payload, retain=True)
-
-    except Exception as e:
-        print(f"[EASun Reader] Fehler beim Verarbeiten des Schaltbefehls: {e}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Home Assistant MQTT discovery
@@ -279,58 +228,234 @@ def on_message(client, userdata, msg):
 
 SENSORS = {
     # Output
-    "output_voltage": {"name": "Output voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
-    "output_frequency": {"name": "Output frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
-    "output_apparent_power": {"name": "Output apparent power", "unit": "VA", "device_class": "apparent_power", "state_class": "measurement"},
-    "output_active_power": {"name": "Output active power", "unit": "W", "device_class": "power", "state_class": "measurement"},
-    "output_load": {"name": "Output load", "unit": "%", "state_class": "measurement"},
-    "output_current": {"name": "Output current", "unit": "A", "device_class": "current", "state_class": "measurement"},
-    "dc_bus_voltage": {"name": "DC bus voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
-    "rated_power": {"name": "Rated power", "unit": "VA", "entity_category": "diagnostic"},
+    "output_voltage": {
+        "name": "Output voltage",
+        "unit": "V",
+        "device_class": "voltage",
+        "state_class": "measurement",
+    },
+    "output_frequency": {
+        "name": "Output frequency",
+        "unit": "Hz",
+        "device_class": "frequency",
+        "state_class": "measurement",
+    },
+    "output_apparent_power": {
+        "name": "Output apparent power",
+        "unit": "VA",
+        "device_class": "apparent_power",
+        "state_class": "measurement",
+    },
+    "output_active_power": {
+        "name": "Output active power",
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+    },
+    "output_load": {
+        "name": "Output load",
+        "unit": "%",
+        "state_class": "measurement",
+    },
+    "output_current": {
+        "name": "Output current",
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+    },
+    "dc_bus_voltage": {
+        "name": "DC bus voltage",
+        "unit": "V",
+        "device_class": "voltage",
+        "state_class": "measurement",
+    },
+    "rated_power": {
+        "name": "Rated power",
+        "unit": "VA",
+        "entity_category": "diagnostic",
+    },
 
     # Grid
-    "grid_voltage": {"name": "Grid voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
-    "grid_frequency": {"name": "Grid frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
-    "grid_active_power": {"name": "Netzleistung (Bezug/Einspeisung)", "unit": "W", "device_class": "power", "state_class": "measurement"},
-    "grid_high_voltage_limit": {"name": "Grid High Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
-    "grid_low_voltage_limit": {"name": "Grid Low Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
-    "grid_high_frequency_limit": {"name": "Grid High Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
-    "grid_low_frequency_limit": {"name": "Grid Low Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
+    "grid_voltage": {
+        "name": "Grid voltage",
+        "unit": "V",
+        "device_class": "voltage",
+        "state_class": "measurement",
+    },
+    "grid_frequency": {
+        "name": "Grid frequency",
+        "unit": "Hz",
+        "device_class": "frequency",
+        "state_class": "measurement",
+    },
+    "grid_active_power": {
+        "name": "Netzleistung (Bezug/Einspeisung)",
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+    },
+    "grid_high_voltage_limit": {
+        "name": "Grid High Voltage Limit",
+        "unit": "V",
+        "device_class": "voltage",
+        "entity_category": "diagnostic",
+    },
+    "grid_low_voltage_limit": {
+        "name": "Grid Low Voltage Limit",
+        "unit": "V",
+        "device_class": "voltage",
+        "entity_category": "diagnostic",
+    },
+    "grid_high_frequency_limit": {
+        "name": "Grid High Frequency Limit",
+        "unit": "Hz",
+        "device_class": "frequency",
+        "entity_category": "diagnostic",
+    },
+    "grid_low_frequency_limit": {
+        "name": "Grid Low Frequency Limit",
+        "unit": "Hz",
+        "device_class": "frequency",
+        "entity_category": "diagnostic",
+    },
 
     # Battery
-    "battery_voltage": {"name": "Battery voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
-    "battery_capacity": {"name": "Battery capacity", "unit": "%", "device_class": "battery", "state_class": "measurement"},
+    "battery_voltage": {
+        "name": "Battery voltage",
+        "unit": "V",
+        "device_class": "voltage",
+        "state_class": "measurement",
+    },
+    "battery_capacity": {
+        "name": "Battery capacity",
+        "unit": "%",
+        "device_class": "battery",
+        "state_class": "measurement",
+    },
 
     # PV
-    "pv_voltage": {"name": "PV voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
-    "pv_current": {"name": "PV current", "unit": "A", "device_class": "current", "state_class": "measurement"},
-    "pv_power": {"name": "PV power", "unit": "W", "device_class": "power", "state_class": "measurement"},
-    "pv_max_voltage": {"name": "PV max voltage", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
-    "pv_max_power": {"name": "PV max power", "unit": "W", "device_class": "power", "entity_category": "diagnostic"},
+    "pv_voltage": {
+        "name": "PV voltage",
+        "unit": "V",
+        "device_class": "voltage",
+        "state_class": "measurement",
+    },
+    "pv_current": {
+        "name": "PV current",
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+    },
+    "pv_power": {
+        "name": "PV power",
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+    },
+    "pv_max_voltage": {
+        "name": "PV max voltage",
+        "unit": "V",
+        "device_class": "voltage",
+        "entity_category": "diagnostic",
+    },
+    "pv_max_power": {
+        "name": "PV max power",
+        "unit": "W",
+        "device_class": "power",
+        "entity_category": "diagnostic",
+    },
 
     # Temperatures
-    "pv_temperature": {"name": "PV temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
-    "inverter_temperature": {"name": "Inverter temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
-    "boost_temperature": {"name": "Boost temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    "pv_temperature": {
+        "name": "PV temperature",
+        "unit": "°C",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "inverter_temperature": {
+        "name": "Inverter temperature",
+        "unit": "°C",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "boost_temperature": {
+        "name": "Boost temperature",
+        "unit": "°C",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
 
     # Generation
-    "pv_energy_today": {"name": "PV energy today", "unit": "kWh", "device_class": "energy", "state_class": "total"},
-    "pv_energy_month": {"name": "PV energy this month", "unit": "kWh", "device_class": "energy", "state_class": "total"},
-    "pv_energy_year": {"name": "PV energy this year", "unit": "kWh", "device_class": "energy", "state_class": "total"},
-    "pv_energy_total": {"name": "PV energy total", "unit": "kWh", "device_class": "energy", "state_class": "total_increasing"},
+    "pv_energy_today": {
+        "name": "PV energy today",
+        "unit": "kWh",
+        "device_class": "energy",
+        "state_class": "total",
+    },
+    "pv_energy_month": {
+        "name": "PV energy this month",
+        "unit": "kWh",
+        "device_class": "energy",
+        "state_class": "total",
+    },
+    "pv_energy_year": {
+        "name": "PV energy this year",
+        "unit": "kWh",
+        "device_class": "energy",
+        "state_class": "total",
+    },
+    "pv_energy_total": {
+        "name": "PV energy total",
+        "unit": "kWh",
+        "device_class": "energy",
+        "state_class": "total_increasing",
+    },
 
     # Extra Sensors
-    "fan_1_speed_raw": {"name": "Luefter 1 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
-    "fan_2_speed_raw": {"name": "Luefter 2 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
-    "battery_charging_current_tentative": {"name": "Batterie Ladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
-    "battery_discharging_current_tentative": {"name": "Batterie Entladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
-    "pv_operating_mode_tentative": {"name": "PV Betriebsmodus", "entity_category": "diagnostic"},
+    "fan_1_speed_raw": {
+        "name": "Luefter 1 Geschwindigkeit",
+        "entity_category": "diagnostic",
+        "state_class": "measurement",
+    },
+    "fan_2_speed_raw": {
+        "name": "Luefter 2 Geschwindigkeit",
+        "entity_category": "diagnostic",
+        "state_class": "measurement",
+    },
+    "battery_charging_current_tentative": {
+        "name": "Batterie Ladestrom (Details)",
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+    },
+    "battery_discharging_current_tentative": {
+        "name": "Batterie Entladestrom (Details)",
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+    },
+    "pv_operating_mode_tentative": {
+        "name": "PV Betriebsmodus",
+        "entity_category": "diagnostic",
+    },
 
     # Diagnostics
-    "output_status_code": {"name": "Output status code", "entity_category": "diagnostic"},
-    "software_version": {"name": "Software version", "entity_category": "diagnostic"},
-    "software_date": {"name": "Software date", "entity_category": "diagnostic"},
-    "firmware_variant": {"name": "Firmware variant", "entity_category": "diagnostic"},
+    "output_status_code": {
+        "name": "Output status code",
+        "entity_category": "diagnostic",
+    },
+    "software_version": {
+        "name": "Software version",
+        "entity_category": "diagnostic",
+    },
+    "software_date": {
+        "name": "Software date",
+        "entity_category": "diagnostic",
+    },
+    "firmware_variant": {
+        "name": "Firmware variant",
+        "entity_category": "diagnostic",
+    },
 }
 
 
@@ -354,16 +479,13 @@ def create_mqtt_client(args):
         client = mqtt.Client(client_id=args.device_id)
 
     if args.mqtt_user:
-        client.username_pw_set(args.mqtt_user, args.mqtt_password)
+        client.username_pw_set(
+            args.mqtt_user,
+            args.mqtt_password,
+        )
 
     if args.mqtt_tls:
         client.tls_set()
-        
-    # Initiale User-Daten setzen, Serial wird später hinzugefügt
-    client.user_data_set({"args": args, "ser": None})
-    
-    # Callback für Switch Commands setzen
-    client.on_message = on_message
 
     availability_topic = f"{args.mqtt_topic}/availability"
 
@@ -381,10 +503,6 @@ def create_mqtt_client(args):
     )
 
     client.loop_start()
-
-    # Topic für Schaltbefehle abonnieren
-    command_topic = f"{args.mqtt_topic}/switch/set"
-    client.subscribe(command_topic)
 
     client.publish(
         availability_topic,
@@ -407,7 +525,6 @@ def publish_discovery(client, args):
         "model": "Hybrid Solar Inverter / SMT-III protocol",
     }
 
-    # Sensoren konfigurieren
     for key, sensor in SENSORS.items():
         config = {
             "name": sensor["name"],
@@ -420,30 +537,27 @@ def publish_discovery(client, args):
 
         if "unit" in sensor:
             config["unit_of_measurement"] = sensor["unit"]
+
         if "device_class" in sensor:
             config["device_class"] = sensor["device_class"]
+
         if "state_class" in sensor:
             config["state_class"] = sensor["state_class"]
+
         if "entity_category" in sensor:
             config["entity_category"] = sensor["entity_category"]
 
-        discovery_topic = f"{args.discovery_prefix}/sensor/{args.device_id}/{key}/config"
-        client.publish(discovery_topic, json.dumps(config), qos=1, retain=True)
+        discovery_topic = (
+            f"{args.discovery_prefix}/sensor/"
+            f"{args.device_id}/{key}/config"
+        )
 
-    # Schalter (Switch) konfigurieren
-    switch_config = {
-        "name": "EASun 230V Inverter Schalter",
-        "unique_id": f"{args.device_id}_inverter_power_switch",
-        "command_topic": f"{args.mqtt_topic}/switch/set",
-        "state_topic": f"{args.mqtt_topic}/switch/state",
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        "icon": "mdi:power",
-        "device": device,
-        "availability_topic": availability_topic,
-    }
-    discovery_topic_switch = f"{args.discovery_prefix}/switch/{args.device_id}/inverter_switch/config"
-    client.publish(discovery_topic_switch, json.dumps(switch_config), qos=1, retain=True)
+        client.publish(
+            discovery_topic,
+            json.dumps(config),
+            qos=1,
+            retain=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -456,20 +570,64 @@ def parse_args():
     )
 
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--stdout", action="store_true", help="Print readings to stdout")
-    mode.add_argument("--mqtt", action="store_true", help="Publish readings via MQTT")
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port (default: /dev/ttyUSB0)")
-    parser.add_argument("--interval", type=float, default=10.0, help="Polling interval in seconds (default: 10)")
-    parser.add_argument("--once", action="store_true", help="Read once and exit")
+    mode.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print readings to stdout",
+    )
+    mode.add_argument(
+        "--mqtt",
+        action="store_true",
+        help="Publish readings via MQTT",
+    )
+
+    parser.add_argument(
+        "--port",
+        default="/dev/ttyUSB0",
+        help="Serial port (default: /dev/ttyUSB0)",
+    )
+
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=10.0,
+        help="Polling interval in seconds (default: 10)",
+    )
+
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Read once and exit",
+    )
+
     parser.add_argument("--mqtt-host")
     parser.add_argument("--mqtt-port", type=int, default=1883)
     parser.add_argument("--mqtt-user")
-    parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
+    parser.add_argument(
+        "--mqtt-password",
+        default=os.environ.get("MQTT_PASSWORD"),
+    )
     parser.add_argument("--mqtt-tls", action="store_true")
-    parser.add_argument("--mqtt-topic", default="easun/inverter")
-    parser.add_argument("--discovery-prefix", default="homeassistant")
-    parser.add_argument("--device-id", default="easun_inverter")
-    parser.add_argument("--device-name", default="EASUN Inverter")
+
+    parser.add_argument(
+        "--mqtt-topic",
+        default="easun/inverter",
+    )
+
+    parser.add_argument(
+        "--discovery-prefix",
+        default="homeassistant",
+    )
+
+    parser.add_argument(
+        "--device-id",
+        default="easun_inverter",
+    )
+
+    parser.add_argument(
+        "--device-name",
+        default="EASUN Inverter",
+    )
 
     args = parser.parse_args()
 
@@ -503,19 +661,12 @@ def main():
             stopbits=1,
             timeout=2,
         ) as ser:
-            
-            # Serielle Schnittstelle in die MQTT Userdata pushen,
-            # damit 'on_message' darauf zugreifen kann
-            if mqtt_client:
-                mqtt_client.user_data_set({"args": args, "ser": ser})
 
             time.sleep(0.2)
             ser.reset_input_buffer()
 
             while True:
-                # Polling blockieren, falls gerade ein Schaltbefehl geschickt wird
-                with serial_lock:
-                    data, successful = poll_inverter(ser)
+                data, successful = poll_inverter(ser)
 
                 for key, value in data.items():
                     if key not in ("_raw", "_errors"):
@@ -530,7 +681,11 @@ def main():
 
                 if args.stdout:
                     print(
-                        json.dumps(state, indent=2, sort_keys=True),
+                        json.dumps(
+                            state,
+                            indent=2,
+                            sort_keys=True,
+                        ),
                         flush=True,
                     )
 
@@ -573,6 +728,7 @@ def main():
                 qos=1,
                 retain=True,
             )
+
             time.sleep(0.2)
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
