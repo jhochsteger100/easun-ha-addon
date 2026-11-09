@@ -18,15 +18,33 @@ COMMAND_QUEUE = queue.Queue()
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
     "output_priority": {
-        "SUF": "POP00",  # Utility First / SUF
-        "Solar": "POP01", # Solar First
-        "SUB": "POP02",  # SBU / SUB
+        "SUF": "POP00",
+        "Solar": "POP01",
+        "SUB": "POP02",
     },
     "charger_priority": {
-        "Utility": "PCP00", # Utility First
-        "Solar": "PCP01",   # Solar First
-        "SNU": "PCP02",     # Solar and Utility
-        "OSO": "PCP03",     # Only Solar
+        "Utility": "PCP00",
+        "Solar": "PCP01",
+        "SNU": "PCP02",
+        "OSO": "PCP03",
+    },
+    "ac_input_range": {
+        "Appliance (APL)": "PGR00",
+        "UPS": "PGR01",
+    },
+    "max_utility_charge_current": {
+        "2A": "MUCHGC002",
+        "10A": "MUCHGC010",
+        "20A": "MUCHGC020",
+        "30A": "MUCHGC030",
+    },
+    "max_total_charge_current": {
+        "10A": "MCHGC010",
+        "20A": "MCHGC020",
+        "30A": "MCHGC030",
+        "40A": "MCHGC040",
+        "50A": "MCHGC050",
+        "60A": "MCHGC060",
     }
 }
 
@@ -163,9 +181,7 @@ def query(ser, command):
     try:
         return response.decode("ascii")
     except UnicodeDecodeError:
-        raise ValueError(
-            f"{command}: non-ASCII response: {response.hex(' ')}"
-        )
+        raise ValueError(f"{command}: non-ASCII response: {response.hex(' ')}")
 
 def poll_inverter(ser):
     result = {}
@@ -209,18 +225,59 @@ def on_message(client, userdata, msg):
 # SENSORS & SELECTS
 # ---------------------------------------------------------------------------
 SENSORS = {
+    # Output
     "output_voltage": {"name": "Output voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "output_frequency": {"name": "Output frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
+    "output_apparent_power": {"name": "Output apparent power", "unit": "VA", "device_class": "apparent_power", "state_class": "measurement"},
     "output_active_power": {"name": "Output active power", "unit": "W", "device_class": "power", "state_class": "measurement"},
     "output_load": {"name": "Output load", "unit": "%", "state_class": "measurement"},
+    "output_current": {"name": "Output current", "unit": "A", "device_class": "current", "state_class": "measurement"},
     "dc_bus_voltage": {"name": "DC bus voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    "rated_power": {"name": "Rated power", "unit": "VA", "entity_category": "diagnostic"},
+    
+    # Grid
     "grid_voltage": {"name": "Grid voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
-    "grid_active_power": {"name": "Netzleistung", "unit": "W", "device_class": "power", "state_class": "measurement"},
+    "grid_frequency": {"name": "Grid frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
+    "grid_active_power": {"name": "Netzleistung (Bezug/Einspeisung)", "unit": "W", "device_class": "power", "state_class": "measurement"},
+    "grid_high_voltage_limit": {"name": "Grid High Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
+    "grid_low_voltage_limit": {"name": "Grid Low Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
+    "grid_high_frequency_limit": {"name": "Grid High Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
+    "grid_low_frequency_limit": {"name": "Grid Low Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
+    
+    # Battery
     "battery_voltage": {"name": "Battery voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "battery_capacity": {"name": "Battery capacity", "unit": "%", "device_class": "battery", "state_class": "measurement"},
+    
+    # PV
+    "pv_voltage": {"name": "PV voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    "pv_current": {"name": "PV current", "unit": "A", "device_class": "current", "state_class": "measurement"},
     "pv_power": {"name": "PV power", "unit": "W", "device_class": "power", "state_class": "measurement"},
+    "pv_max_voltage": {"name": "PV max voltage", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
+    "pv_max_power": {"name": "PV max power", "unit": "W", "device_class": "power", "entity_category": "diagnostic"},
+    
+    # Temperatures
+    "pv_temperature": {"name": "PV temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     "inverter_temperature": {"name": "Inverter temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    "boost_temperature": {"name": "Boost temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    
+    # Generation
+    "pv_energy_today": {"name": "PV energy today", "unit": "kWh", "device_class": "energy", "state_class": "total"},
+    "pv_energy_month": {"name": "PV energy this month", "unit": "kWh", "device_class": "energy", "state_class": "total"},
+    "pv_energy_year": {"name": "PV energy this year", "unit": "kWh", "device_class": "energy", "state_class": "total"},
     "pv_energy_total": {"name": "PV energy total", "unit": "kWh", "device_class": "energy", "state_class": "total_increasing"},
+    
+    # Extra Sensors
+    "fan_1_speed_raw": {"name": "Luefter 1 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
+    "fan_2_speed_raw": {"name": "Luefter 2 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
+    "battery_charging_current_tentative": {"name": "Batterie Ladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    "battery_discharging_current_tentative": {"name": "Batterie Entladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    "pv_operating_mode_tentative": {"name": "PV Betriebsmodus", "entity_category": "diagnostic"},
+    
+    # Diagnostics
+    "output_status_code": {"name": "Output status code", "entity_category": "diagnostic"},
+    "software_version": {"name": "Software version", "entity_category": "diagnostic"},
+    "software_date": {"name": "Software date", "entity_category": "diagnostic"},
+    "firmware_variant": {"name": "Firmware variant", "entity_category": "diagnostic"},
 }
 
 SELECTS = {
@@ -233,6 +290,21 @@ SELECTS = {
         "name": "Ladequelle (Menue 16)",
         "options": ["Utility", "Solar", "SNU", "OSO"],
         "icon": "mdi:battery-charging"
+    },
+    "ac_input_range": {
+        "name": "AC Eingang (Menue 03)",
+        "options": ["Appliance (APL)", "UPS"],
+        "icon": "mdi:current-ac"
+    },
+    "max_utility_charge_current": {
+        "name": "Netz-Ladestrom (Menue 11)",
+        "options": ["2A", "10A", "20A", "30A"],
+        "icon": "mdi:current-dc"
+    },
+    "max_total_charge_current": {
+        "name": "Gesamt-Ladestrom (Menue 02)",
+        "options": ["10A", "20A", "30A", "40A", "50A", "60A"],
+        "icon": "mdi:battery-charging-high"
     }
 }
 
@@ -337,7 +409,10 @@ def main():
 
     state = {
         "output_priority": "SUB",
-        "charger_priority": "SNU"
+        "charger_priority": "SNU",
+        "ac_input_range": "Appliance (APL)",
+        "max_utility_charge_current": "20A",
+        "max_total_charge_current": "50A"
     }
 
     try:
