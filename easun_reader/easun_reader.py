@@ -90,3 +90,4 @@ def parse_hbat(response):
         "battery_charging_current_tentative": int(f[3]),
         "battery_discharging_current_tentative": int(f[4]),
         "battery_dc_bus_voltage": int(f[5]),
+    }
