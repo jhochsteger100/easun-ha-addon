@@ -240,4 +240,237 @@ SENSORS = {
     "grid_voltage": {"name": "Grid voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "grid_frequency": {"name": "Grid frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
     "grid_active_power": {"name": "Netzleistung (Bezug/Einspeisung)", "unit": "W", "device_class": "power", "state_class": "measurement"},
-    "grid_high_voltage_limit": {"name": "Grid High Voltage Limit", "unit": "
+    "grid_high_voltage_limit": {"name": "Grid High Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
+    "grid_low_voltage_limit": {"name": "Grid Low Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
+    "grid_high_frequency_limit": {"name": "Grid High Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
+    "grid_low_frequency_limit": {"name": "Grid Low Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
+    
+    # Battery
+    "battery_voltage": {"name": "Battery voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    "battery_capacity": {"name": "Battery capacity", "unit": "%", "device_class": "battery", "state_class": "measurement"},
+    
+    # PV
+    "pv_voltage": {"name": "PV voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    "pv_current": {"name": "PV current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    "pv_power": {"name": "PV power", "unit": "W", "device_class": "power", "state_class": "measurement"},
+    "pv_max_voltage": {"name": "PV max voltage", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
+    "pv_max_power": {"name": "PV max power", "unit": "W", "device_class": "power", "entity_category": "diagnostic"},
+    
+    # Temperatures
+    "pv_temperature": {"name": "PV temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    "inverter_temperature": {"name": "Inverter temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    "boost_temperature": {"name": "Boost temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+    
+    # Generation
+    "pv_energy_today": {"name": "PV energy today", "unit": "kWh", "device_class": "energy", "state_class": "total"},
+    "pv_energy_month": {"name": "PV energy this month", "unit": "kWh", "device_class": "energy", "state_class": "total"},
+    "pv_energy_year": {"name": "PV energy this year", "unit": "kWh", "device_class": "energy", "state_class": "total"},
+    "pv_energy_total": {"name": "PV energy total", "unit": "kWh", "device_class": "energy", "state_class": "total_increasing"},
+    
+    # Extra Sensors
+    "fan_1_speed_raw": {"name": "Luefter 1 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
+    "fan_2_speed_raw": {"name": "Luefter 2 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
+    "battery_charging_current_tentative": {"name": "Batterie Ladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    "battery_discharging_current_tentative": {"name": "Batterie Entladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    "pv_operating_mode_tentative": {"name": "PV Betriebsmodus", "entity_category": "diagnostic"},
+    
+    # Diagnostics
+    "output_status_code": {"name": "Output status code", "entity_category": "diagnostic"},
+    "software_version": {"name": "Software version", "entity_category": "diagnostic"},
+    "software_date": {"name": "Software date", "entity_category": "diagnostic"},
+    "firmware_variant": {"name": "Firmware variant", "entity_category": "diagnostic"},
+}
+
+SELECTS = {
+    "output_priority": {
+        "name": "Ausgangsprioritaet (Menue 01)",
+        "options": ["SUB", "SBU", "SUF", "PEC"],
+        "icon": "mdi:power-flow"
+    },
+    "charger_priority": {
+        "name": "Ladequelle (Menue 16)",
+        "options": ["CSO", "SNU", "0S0", "Sot"],
+        "icon": "mdi:battery-charging"
+    },
+    "ac_input_range": {
+        "name": "AC Eingang (Menue 03)",
+        "options": ["Appliance (APL)", "UPS"],
+        "icon": "mdi:current-ac"
+    },
+    "max_utility_charge_current": {
+        "name": "Netz-Ladestrom (Menue 11)",
+        "options": ["2A", "10A", "20A", "30A"],
+        "icon": "mdi:current-dc"
+    },
+    "max_total_charge_current": {
+        "name": "Gesamt-Ladestrom (Menue 02)",
+        "options": ["10A", "20A", "30A", "40A", "50A", "60A"],
+        "icon": "mdi:battery-charging-high"
+    }
+}
+
+def create_mqtt_client(args):
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        print("MQTT mode requires paho-mqtt", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=args.device_id)
+    except (AttributeError, TypeError):
+        client = mqtt.Client(client_id=args.device_id)
+
+    if args.mqtt_user:
+        client.username_pw_set(args.mqtt_user, args.mqtt_password)
+    
+    client.user_data_set({"mqtt_topic": args.mqtt_topic})
+    client.on_connect = on_connect
+    client.on_message = on_message
+
+    availability_topic = f"{args.mqtt_topic}/availability"
+    client.will_set(availability_topic, payload="offline", qos=1, retain=True)
+    client.connect(args.mqtt_host, args.mqtt_port, keepalive=60)
+    client.loop_start()
+    client.publish(availability_topic, "online", qos=1, retain=True)
+    return client
+
+def publish_discovery(client, args):
+    state_topic = f"{args.mqtt_topic}/state"
+    availability_topic = f"{args.mqtt_topic}/availability"
+
+    device = {
+        "identifiers": [args.device_id],
+        "name": args.device_name,
+        "manufacturer": "EASun",
+        "model": "Hybrid Inverter SMT-III",
+    }
+
+    for key, sensor in SENSORS.items():
+        config = {
+            "name": sensor["name"],
+            "unique_id": f"{args.device_id}_{key}",
+            "state_topic": state_topic,
+            "value_template": "{{ value_json." + key + " }}",
+            "availability_topic": availability_topic,
+            "device": device,
+        }
+        for attr in ["unit_of_measurement", "device_class", "state_class", "entity_category"]:
+            if attr.replace("_of_measurement", "") in sensor:
+                config[attr] = sensor[attr.replace("_of_measurement", "")]
+
+        client.publish(f"{args.discovery_prefix}/sensor/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
+
+    for key, select in SELECTS.items():
+        config = {
+            "name": select["name"],
+            "unique_id": f"{args.device_id}_{key}",
+            "state_topic": state_topic,
+            "command_topic": f"{args.mqtt_topic}/set/{key}",
+            "value_template": "{{ value_json." + key + " }}",
+            "options": select["options"],
+            "icon": select["icon"],
+            "availability_topic": availability_topic,
+            "device": device,
+        }
+        client.publish(f"{args.discovery_prefix}/select/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
+
+# ---------------------------------------------------------------------------
+# Command line parsing
+# ---------------------------------------------------------------------------
+def parse_args():
+    parser = argparse.ArgumentParser(description="Read/Write EASUN SMT-III inverter over RS232")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--stdout", action="store_true", help="Print readings to stdout")
+    mode.add_argument("--mqtt", action="store_true", help="Publish readings via MQTT")
+    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port (default: /dev/ttyUSB0)")
+    parser.add_argument("--interval", type=float, default=10.0, help="Polling interval in seconds")
+    parser.add_argument("--once", action="store_true", help="Read once and exit")
+    parser.add_argument("--mqtt-host")
+    parser.add_argument("--mqtt-port", type=int, default=1883)
+    parser.add_argument("--mqtt-user")
+    parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
+    parser.add_argument("--mqtt-topic", default="easun/inverter")
+    parser.add_argument("--discovery-prefix", default="homeassistant")
+    parser.add_argument("--device-id", default="easun_inverter")
+    parser.add_argument("--device-name", default="EASUN Inverter")
+    args = parser.parse_args()
+    if args.mqtt and not args.mqtt_host:
+        parser.error("--mqtt requires --mqtt-host")
+    return args
+
+# ---------------------------------------------------------------------------
+# Main Loop
+# ---------------------------------------------------------------------------
+def main():
+    args = parse_args()
+    mqtt_client = create_mqtt_client(args) if args.mqtt else None
+    if mqtt_client:
+        publish_discovery(mqtt_client, args)
+
+    state = {
+        "output_priority": "SUB",
+        "charger_priority": "SNU",
+        "ac_input_range": "Appliance (APL)",
+        "max_utility_charge_current": "20A",
+        "max_total_charge_current": "50A"
+    }
+
+    try:
+        with serial.Serial(args.port, baudrate=2400, bytesize=8, parity=serial.PARITY_NONE, stopbits=1, timeout=2) as ser:
+            time.sleep(0.2)
+            ser.reset_input_buffer()
+
+            while True:
+                while not COMMAND_QUEUE.empty():
+                    topic, payload = COMMAND_QUEUE.get()
+                    command_key = topic.split("/")[-1]
+                    
+                    if command_key in COMMAND_MAP and payload in COMMAND_MAP[command_key]:
+                        rs232_cmd = COMMAND_MAP[command_key][payload]
+                        try:
+                            print(f"Sende Befehl an Inverter: {rs232_cmd}")
+                            response = query(ser, rs232_cmd)
+                            print(f"Antwort: {response}")
+                            state[command_key] = payload
+                        except Exception as e:
+                            print(f"Fehler beim Senden von {rs232_cmd}: {e}")
+                    else:
+                        print(f"Unbekannter Befehl: {command_key} -> {payload}")
+                    
+                    time.sleep(0.5)
+
+                data, successful = poll_inverter(ser)
+                for key, value in data.items():
+                    if key not in ("_raw", "_errors"):
+                        state[key] = value
+
+                state["_raw"] = data.get("_raw", {})
+                if "_errors" in data:
+                    state["_errors"] = data["_errors"]
+                else:
+                    state.pop("_errors", None)
+
+                if mqtt_client:
+                    if successful:
+                        mqtt_client.publish(f"{args.mqtt_topic}/availability", "online", qos=1, retain=True)
+                        mqtt_client.publish(f"{args.mqtt_topic}/state", json.dumps(state), qos=1, retain=True)
+                    else:
+                        mqtt_client.publish(f"{args.mqtt_topic}/availability", "offline", qos=1, retain=True)
+
+                if args.once:
+                    break
+
+                time.sleep(args.interval)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if mqtt_client:
+            mqtt_client.publish(f"{args.mqtt_topic}/availability", "offline", qos=1, retain=True)
+            time.sleep(0.2)
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+
+if __name__ == "__main__":
+    main()
