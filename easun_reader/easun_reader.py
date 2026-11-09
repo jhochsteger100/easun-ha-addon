@@ -18,15 +18,16 @@ COMMAND_QUEUE = queue.Queue()
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
     "output_priority": {
-        "SUF": "POP00",
-        "Solar": "POP01",
-        "SUB": "POP02",
+        "SUB": "POP00",
+        "SBU": "POP01",
+        "SUF": "POP02",
+        "PEC": "POP03",
     },
     "charger_priority": {
-        "Utility": "PCP00",
-        "Solar": "PCP01",
-        "SNU": "PCP02",
-        "OSO": "PCP03",
+        "CSO": "PCP00",
+        "SNU": "PCP01",
+        "0S0": "PCP02",
+        "Sot": "PCP03",
     },
     "ac_input_range": {
         "Appliance (APL)": "PGR00",
@@ -283,12 +284,12 @@ SENSORS = {
 SELECTS = {
     "output_priority": {
         "name": "Ausgangsprioritaet (Menue 01)",
-        "options": ["SUF", "Solar", "SUB"],
+        "options": ["SUB", "SBU", "SUF", "PEC"],
         "icon": "mdi:power-flow"
     },
     "charger_priority": {
         "name": "Ladequelle (Menue 16)",
-        "options": ["Utility", "Solar", "SNU", "OSO"],
+        "options": ["CSO", "SNU", "0S0", "Sot"],
         "icon": "mdi:battery-charging"
     },
     "ac_input_range": {
@@ -433,43 +434,4 @@ def main():
                             print(f"Antwort: {response}")
                             state[command_key] = payload
                         except Exception as e:
-                            print(f"Fehler beim Senden von {rs232_cmd}: {e}")
-                    else:
-                        print(f"Unbekannter Befehl: {command_key} -> {payload}")
-                    
-                    time.sleep(0.5)
-
-                data, successful = poll_inverter(ser)
-                for key, value in data.items():
-                    if key not in ("_raw", "_errors"):
-                        state[key] = value
-
-                state["_raw"] = data.get("_raw", {})
-                if "_errors" in data:
-                    state["_errors"] = data["_errors"]
-                else:
-                    state.pop("_errors", None)
-
-                if mqtt_client:
-                    if successful:
-                        mqtt_client.publish(f"{args.mqtt_topic}/availability", "online", qos=1, retain=True)
-                        mqtt_client.publish(f"{args.mqtt_topic}/state", json.dumps(state), qos=1, retain=True)
-                    else:
-                        mqtt_client.publish(f"{args.mqtt_topic}/availability", "offline", qos=1, retain=True)
-
-                if args.once:
-                    break
-
-                time.sleep(args.interval)
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if mqtt_client:
-            mqtt_client.publish(f"{args.mqtt_topic}/availability", "offline", qos=1, retain=True)
-            time.sleep(0.2)
-            mqtt_client.loop_stop()
-            mqtt_client.disconnect()
-
-if __name__ == "__main__":
-    main()
+                            print
