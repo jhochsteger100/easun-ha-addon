@@ -197,9 +197,9 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # WICHTIG: CRC nur an Schreibbefehle (POP, PCP, PGR, MUCHGC, MCHGC) anhängen!
-    # Lesebefehle (H...) werden wie früher als reiner Text gesendet.
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG")):
+    # WICHTIG: CRC nur an Schreibbefehle anhängen!
+    # "2EP" (Menue 58) wurde zur Liste hinzugefügt.
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "2EP")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
