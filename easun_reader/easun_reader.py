@@ -17,6 +17,12 @@ COMMAND_QUEUE = queue.Queue()
 # Steuerbefehle (Voltronic PI30 Standard)
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
+    "grid_input_power": {
+        "0.15 kW": "2EP0.15",
+        "0.25 kW": "2EP0.25",
+        "0.35 kW": "2EP0.35",
+        "0.50 kW": "2EP0.50",
+    },      
     "output_priority": {
         "SUB": "POP00",
         "SBU": "POP01",
@@ -311,6 +317,12 @@ SENSORS = {
 }
 
 SELECTS = {
+    "grid_input_power": {
+        "name": "Generator-Eingangsleistung (Menue 58)",
+        "options": ["0.15 kW", "0.25 kW", "0.35 kW", "0.50 kW"],
+        "icon": "mdi:generator-portable"
+    }, 
+    
     "output_priority": {
         "name": "Ausgangsprioritaet (Menue 01)",
         "options": ["SUB", "SBU", "SUF", "PEC"],
