@@ -166,12 +166,35 @@ COMMANDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Serial communication
+# Serial communication mit CRC
 # ---------------------------------------------------------------------------
+
+def crc_pi30(command):
+    crc = 0
+    for char in command:
+        crc = (crc ^ (ord(char) << 8)) & 0xFFFF
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    
+    crc_high = (crc >> 8) & 0xFF
+    crc_low = crc & 0xFF
+    
+    # Voltronic-Besonderheit: Bestimmte Steuerzeichen sind verboten
+    if crc_high in (0x28, 0x0D, 0x0A): crc_high += 1
+    if crc_low in (0x28, 0x0D, 0x0A): crc_low += 1
+        
+    return bytes([crc_high, crc_low])
 
 def query(ser, command):
     ser.reset_input_buffer()
-    request = (command + "\r").encode("ascii")
+    
+    # Prüfsumme berechnen und an den Befehl anhängen
+    crc_bytes = crc_pi30(command)
+    request = command.encode("ascii") + crc_bytes + b"\r"
+    
     ser.write(request)
     ser.flush()
 
@@ -180,9 +203,11 @@ def query(ser, command):
         raise TimeoutError(f"{command}: no response")
 
     try:
-        return response.decode("ascii")
-    except UnicodeDecodeError:
-        raise ValueError(f"{command}: non-ASCII response: {response.hex(' ')}")
+        # errors="ignore" verhindert Abstürze durch nicht-lesbare CRC-Bytes in der Inverter-Antwort
+        return response.decode("ascii", errors="ignore")
+    except Exception as e:
+        raise ValueError(f"{command}: decode error {e}")
+
 
 def poll_inverter(ser):
     result = {}
