@@ -166,7 +166,7 @@ COMMANDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Serial communication mit CRC
+# Serial communication mit dynamischer CRC
 # ---------------------------------------------------------------------------
 
 def crc_pi30(command):
@@ -191,9 +191,13 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # Prüfsumme berechnen und an den Befehl anhängen
-    crc_bytes = crc_pi30(command)
-    request = command.encode("ascii") + crc_bytes + b"\r"
+    # WICHTIG: CRC nur an Schreibbefehle (POP, PCP, PGR, MUCHGC, MCHGC) anhängen!
+    # Lesebefehle (H...) werden wie früher als reiner Text gesendet.
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG")):
+        crc_bytes = crc_pi30(command)
+        request = command.encode("ascii") + crc_bytes + b"\r"
+    else:
+        request = (command + "\r").encode("ascii")
     
     ser.write(request)
     ser.flush()
