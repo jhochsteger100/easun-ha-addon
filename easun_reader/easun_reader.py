@@ -17,12 +17,6 @@ COMMAND_QUEUE = queue.Queue()
 # Steuerbefehle (Voltronic PI30 Standard)
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
-    "grid_input_power": {
-        "0.15 kW": "2EP0.15",
-        "0.25 kW": "2EP0.25",
-        "0.35 kW": "2EP0.35",
-        "0.50 kW": "2EP0.50",
-    },      
     "output_priority": {
         "SUB": "POP00",
         "SBU": "POP01",
@@ -197,9 +191,9 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # WICHTIG: CRC nur an Schreibbefehle anhängen!
-    # "2EP" (Menue 58) wurde zur Liste hinzugefügt.
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "2EP")):
+    # WICHTIG: CRC nur an Schreibbefehle (POP, PCP, PGR, MUCHGC, MCHGC) anhängen!
+    # Lesebefehle (H...) werden wie früher als reiner Text gesendet.
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -317,12 +311,6 @@ SENSORS = {
 }
 
 SELECTS = {
-    "grid_input_power": {
-        "name": "Generator-Eingangsleistung (Menue 58)",
-        "options": ["0.15 kW", "0.25 kW", "0.35 kW", "0.50 kW"],
-        "icon": "mdi:generator-portable"
-    }, 
-    
     "output_priority": {
         "name": "Ausgangsprioritaet (Menue 01)",
         "options": ["SUB", "SBU", "SUF", "PEC"],
