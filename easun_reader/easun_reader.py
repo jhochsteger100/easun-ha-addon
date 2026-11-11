@@ -196,7 +196,7 @@ def query(ser, command):
     ser.reset_input_buffer()
     
     # WICHTIG: CRC an alle Schreibbefehle anhängen
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PTON", "PTOFF", "PE")):
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PTON", "PTOFF", "PE", "PDAT")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -254,7 +254,7 @@ def on_message(client, userdata, msg):
     print(f"Received command: {msg.topic} -> {payload}")
 
 # ---------------------------------------------------------------------------
-# SENSORS, SELECTS & TEXTS
+# SENSORS, SELECTS, TEXTS & BUTTONS
 # ---------------------------------------------------------------------------
 SENSORS = {
     # Output
@@ -356,6 +356,14 @@ TEXTS = {
     }
 }
 
+BUTTONS = {
+    "sync_time": {
+        "name": "Zeit synchronisieren",
+        "icon": "mdi:clock-sync",
+        "payload_press": "SYNC"
+    }
+}
+
 def create_mqtt_client(args):
     try:
         import paho.mqtt.client as mqtt
@@ -435,6 +443,18 @@ def publish_discovery(client, args):
         }
         client.publish(f"{args.discovery_prefix}/text/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
+    for key, btn in BUTTONS.items():
+        config = {
+            "name": btn["name"],
+            "unique_id": f"{args.device_id}_{key}",
+            "command_topic": f"{args.mqtt_topic}/set/{key}",
+            "payload_press": btn["payload_press"],
+            "icon": btn["icon"],
+            "availability_topic": availability_topic,
+            "device": device,
+        }
+        client.publish(f"{args.discovery_prefix}/button/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
+
 # ---------------------------------------------------------------------------
 # Command line parsing
 # ---------------------------------------------------------------------------
@@ -503,17 +523,23 @@ def main():
                         if payload.isdigit() and 0 <= int(payload) <= 23:
                             rs232_cmd = f"PTOFF{int(payload):02d}"
 
-                    # 3. Befehl senden, falls gueltig
+                    # 3. Zeit-Synchronisation (Pi-Zeit -> Inverter)
+                    elif command_key == "sync_time" and payload == "SYNC":
+                        now = datetime.now()
+                        rs232_cmd = now.strftime("PDAT%y%m%d%H%M%S")
+
+                    # 4. Befehl senden, falls gueltig
                     if rs232_cmd:
                         try:
                             print(f"Sende Befehl an Inverter: {rs232_cmd}")
                             response = query(ser, rs232_cmd)
                             print(f"Antwort: {response}")
-                            state[command_key] = payload
+                            if command_key != "sync_time":
+                                state[command_key] = payload
                         except Exception as e:
                             print(f"Fehler beim Senden von {rs232_cmd}: {e}")
                     else:
-                        print(f"Ungueltiger Befehl oder falsches Format: {command_key} -> {payload}. Erwartet: Optionen oder Stunde 00-23.")
+                        print(f"Ungueltiger Befehl oder falsches Format: {command_key} -> {payload}.")
                     
                     time.sleep(0.5)
 
