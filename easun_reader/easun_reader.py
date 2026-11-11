@@ -46,6 +46,10 @@ COMMAND_MAP = {
         "40A": "MCHGC040",
         "50A": "MCHGC050",
         "60A": "MCHGC060",
+    },
+    "eco_mode": {
+        "Enable": "PEa",
+        "Disable": "PEd",
     }
 }
 
@@ -191,9 +195,8 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # WICHTIG: CRC nur an Schreibbefehle (POP, PCP, PGR, MUCHGC, MCHGC) anhängen!
-    # Lesebefehle (H...) werden wie früher als reiner Text gesendet.
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG")):
+    # WICHTIG: CRC nur an Schreibbefehle anhängen (nun inklusive PTON, PTOFF und PE)
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PTON", "PTOFF", "PE")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -207,7 +210,6 @@ def query(ser, command):
         raise TimeoutError(f"{command}: no response")
 
     try:
-        # errors="ignore" verhindert Abstürze durch nicht-lesbare CRC-Bytes in der Inverter-Antwort
         return response.decode("ascii", errors="ignore")
     except Exception as e:
         raise ValueError(f"{command}: decode error {e}")
@@ -252,7 +254,7 @@ def on_message(client, userdata, msg):
     print(f"Received command: {msg.topic} -> {payload}")
 
 # ---------------------------------------------------------------------------
-# SENSORS & SELECTS
+# SENSORS, SELECTS & TEXTS
 # ---------------------------------------------------------------------------
 SENSORS = {
     # Output
@@ -335,6 +337,22 @@ SELECTS = {
         "name": "Gesamt-Ladestrom (Menue 02)",
         "options": ["10A", "20A", "30A", "40A", "50A", "60A"],
         "icon": "mdi:battery-charging-high"
+    },
+    "eco_mode": {
+        "name": "ECO Modus (Menue 08)",
+        "options": ["Enable", "Disable"],
+        "icon": "mdi:leaf"
+    }
+}
+
+TEXTS = {
+    "ac_output_on_time": {
+        "name": "AC Output On Time (HHMM)",
+        "icon": "mdi:clock-start"
+    },
+    "ac_output_off_time": {
+        "name": "AC Output Off Time (HHMM)",
+        "icon": "mdi:clock-end"
     }
 }
 
@@ -404,6 +422,19 @@ def publish_discovery(client, args):
         }
         client.publish(f"{args.discovery_prefix}/select/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
+    for key, text in TEXTS.items():
+        config = {
+            "name": text["name"],
+            "unique_id": f"{args.device_id}_{key}",
+            "state_topic": state_topic,
+            "command_topic": f"{args.mqtt_topic}/set/{key}",
+            "value_template": "{{ value_json." + key + " }}",
+            "icon": text["icon"],
+            "availability_topic": availability_topic,
+            "device": device,
+        }
+        client.publish(f"{args.discovery_prefix}/text/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
+
 # ---------------------------------------------------------------------------
 # Command line parsing
 # ---------------------------------------------------------------------------
@@ -442,7 +473,10 @@ def main():
         "charger_priority": "SNU",
         "ac_input_range": "Appliance (APL)",
         "max_utility_charge_current": "20A",
-        "max_total_charge_current": "50A"
+        "max_total_charge_current": "50A",
+        "eco_mode": "Disable",
+        "ac_output_on_time": "0000",
+        "ac_output_off_time": "0000"
     }
 
     try:
@@ -455,8 +489,22 @@ def main():
                     topic, payload = COMMAND_QUEUE.get()
                     command_key = topic.split("/")[-1]
                     
+                    rs232_cmd = None
+                    
+                    # 1. Normale Dropdown-Optionen parsen
                     if command_key in COMMAND_MAP and payload in COMMAND_MAP[command_key]:
                         rs232_cmd = COMMAND_MAP[command_key][payload]
+                    
+                    # 2. Dynamische Zeit-Payloads (HHMM) parsen
+                    elif command_key == "ac_output_on_time":
+                        if len(payload) == 4 and payload.isdigit():
+                            rs232_cmd = f"PTON{payload}"
+                    elif command_key == "ac_output_off_time":
+                        if len(payload) == 4 and payload.isdigit():
+                            rs232_cmd = f"PTOFF{payload}"
+
+                    # 3. Befehl senden, falls gültig
+                    if rs232_cmd:
                         try:
                             print(f"Sende Befehl an Inverter: {rs232_cmd}")
                             response = query(ser, rs232_cmd)
@@ -465,7 +513,7 @@ def main():
                         except Exception as e:
                             print(f"Fehler beim Senden von {rs232_cmd}: {e}")
                     else:
-                        print(f"Unbekannter Befehl: {command_key} -> {payload}")
+                        print(f"Ungültiger Befehl oder falsches Format: {command_key} -> {payload}. Erwartet: Optionen oder HHMM.")
                     
                     time.sleep(0.5)
 
