@@ -195,7 +195,7 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # WICHTIG: CRC nur an Schreibbefehle anhängen (nun inklusive PTON, PTOFF und PE)
+    # WICHTIG: CRC an alle Schreibbefehle anhängen
     if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PTON", "PTOFF", "PE")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
@@ -347,11 +347,11 @@ SELECTS = {
 
 TEXTS = {
     "ac_output_on_time": {
-        "name": "AC Output On Time (HHMM)",
+        "name": "AC Output On Time (00-23)",
         "icon": "mdi:clock-start"
     },
     "ac_output_off_time": {
-        "name": "AC Output Off Time (HHMM)",
+        "name": "AC Output Off Time (00-23)",
         "icon": "mdi:clock-end"
     }
 }
@@ -475,8 +475,8 @@ def main():
         "max_utility_charge_current": "20A",
         "max_total_charge_current": "50A",
         "eco_mode": "Disable",
-        "ac_output_on_time": "0000",
-        "ac_output_off_time": "0000"
+        "ac_output_on_time": "00",
+        "ac_output_off_time": "00"
     }
 
     try:
@@ -495,15 +495,15 @@ def main():
                     if command_key in COMMAND_MAP and payload in COMMAND_MAP[command_key]:
                         rs232_cmd = COMMAND_MAP[command_key][payload]
                     
-                    # 2. Dynamische Zeit-Payloads (HHMM) parsen
+                    # 2. Dynamische Zeit-Payloads (nur volle Stunden 00-23) parsen
                     elif command_key == "ac_output_on_time":
-                        if len(payload) == 4 and payload.isdigit():
-                            rs232_cmd = f"PTON{payload}"
+                        if payload.isdigit() and 0 <= int(payload) <= 23:
+                            rs232_cmd = f"PTON{int(payload):02d}"
                     elif command_key == "ac_output_off_time":
-                        if len(payload) == 4 and payload.isdigit():
-                            rs232_cmd = f"PTOFF{payload}"
+                        if payload.isdigit() and 0 <= int(payload) <= 23:
+                            rs232_cmd = f"PTOFF{int(payload):02d}"
 
-                    # 3. Befehl senden, falls gültig
+                    # 3. Befehl senden, falls gueltig
                     if rs232_cmd:
                         try:
                             print(f"Sende Befehl an Inverter: {rs232_cmd}")
@@ -513,7 +513,7 @@ def main():
                         except Exception as e:
                             print(f"Fehler beim Senden von {rs232_cmd}: {e}")
                     else:
-                        print(f"Ungültiger Befehl oder falsches Format: {command_key} -> {payload}. Erwartet: Optionen oder HHMM.")
+                        print(f"Ungueltiger Befehl oder falsches Format: {command_key} -> {payload}. Erwartet: Optionen oder Stunde 00-23.")
                     
                     time.sleep(0.5)
 
