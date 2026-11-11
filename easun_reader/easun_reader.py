@@ -195,8 +195,8 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # WICHTIG: CRC an alle Schreibbefehle anhängen
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PTON", "PTOFF", "PE", "PDAT")):
+    # WICHTIG: CRC an alle Schreibbefehle anhängen (inklusive DAT)
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PTON", "PTOFF", "PE", "DAT")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -515,18 +515,18 @@ def main():
                     if command_key in COMMAND_MAP and payload in COMMAND_MAP[command_key]:
                         rs232_cmd = COMMAND_MAP[command_key][payload]
                     
-                    # 2. Dynamische Zeit-Payloads (nur volle Stunden 00-23) parsen
+                    # 2. Dynamische Zeit-Payloads (nur volle Stunden 00-23) parsen, zwingend 4 Ziffern formatieren (z.B. PTON2100)
                     elif command_key == "ac_output_on_time":
                         if payload.isdigit() and 0 <= int(payload) <= 23:
-                            rs232_cmd = f"PTON{int(payload):02d}"
+                            rs232_cmd = f"PTON{int(payload):02d}00"
                     elif command_key == "ac_output_off_time":
                         if payload.isdigit() and 0 <= int(payload) <= 23:
-                            rs232_cmd = f"PTOFF{int(payload):02d}"
+                            rs232_cmd = f"PTOFF{int(payload):02d}00"
 
-                    # 3. Zeit-Synchronisation (Pi-Zeit -> Inverter)
+                    # 3. Zeit-Synchronisation (Pi-Zeit -> Inverter) mit dem exakten Befehl DAT
                     elif command_key == "sync_time" and payload == "SYNC":
                         now = datetime.now()
-                        rs232_cmd = now.strftime("PDAT%y%m%d%H%M%S")
+                        rs232_cmd = now.strftime("DAT%y%m%d%H%M%S")
 
                     # 4. Befehl senden, falls gueltig
                     if rs232_cmd:
