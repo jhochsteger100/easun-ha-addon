@@ -14,31 +14,36 @@ import serial
 COMMAND_QUEUE = queue.Queue()
 
 # ---------------------------------------------------------------------------
-# Steuerbefehle (Voltronic PI30 Standard - Getestete Befehle)
+# Steuerbefehle (Inklusive Spannungen & Schwellenwerte für 24V-System)
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
+    # Menü 01: Ausgangspriorität
     "output_priority": {
         "SUB": "POP00",
         "SBU": "POP01",
         "SUF": "POP02",
         "PEC": "POP03",
     },
+    # Menü 16: Ladequelle
     "charger_priority": {
         "CSO": "PCP00",
         "SNU": "PCP01",
         "0S0": "PCP02",
         "Sot": "PCP03",
     },
+    # Menü 03: AC Eingang
     "ac_input_range": {
         "Appliance (APL)": "PGR00",
         "UPS": "PGR01",
     },
+    # Menü 11: Netz-Ladestrom
     "max_utility_charge_current": {
         "2A": "MUCHGC002",
         "10A": "MUCHGC010",
         "20A": "MUCHGC020",
         "30A": "MUCHGC030",
     },
+    # Menü 02: Gesamt-Ladestrom
     "max_total_charge_current": {
         "10A": "MCHGC010",
         "20A": "MCHGC020",
@@ -47,10 +52,26 @@ COMMAND_MAP = {
         "50A": "MCHGC050",
         "60A": "MCHGC060",
     },
+    # Menü 08: ECO Modus
     "eco_mode": {
         "Enable": "PEa",
         "Disable": "PEd",
-    }
+    },
+    # --- NEU: Spannungen & Schwellenwerte (Beispielhafte Befehlsstruktur für 24V) ---
+    # Menü 12: Rückkehrspannung zu Netz bei SBU (z.B. V0230 für 23.0V)
+    "back_to_grid_voltage": lambda val: f"V{int(float(val)*10):04d}",
+    # Menü 13: Rückkehrspannung zu Batterie (z.B. VIC0270 für 27.0V)
+    "back_to_battery_voltage": lambda val: f"FUL{int(float(val)*10):03d}",
+    # Menü 17: Battery reboot voltage (z.B. PBD...)
+    "battery_reboot_voltage": lambda val: f"PBD{int(float(val)*10):03d}",
+    # Menü 24: Battery low voltage
+    "battery_low_voltage": lambda val: f"PBC{int(float(val)*10):03d}",
+    # Menü 26: Bulk charging voltage (C.V. voltage)
+    "bulk_charging_voltage": lambda val: f"BVC{int(float(val)*10):03d}",
+    # Menü 27: Floating charging voltage
+    "floating_charging_voltage": lambda val: f"BVF{int(float(val)*10):03d}",
+    # Menü 29: Low DC cut-off voltage
+    "low_dc_cutoff_voltage": lambda val: f"CUT{int(float(val)*10):03d}",
 }
 
 # ---------------------------------------------------------------------------
@@ -65,9 +86,7 @@ def fields(response: str):
 
 def require_count(command, f, count):
     if len(f) < count:
-        raise ValueError(
-            f"{command}: expected at least {count} fields, got {len(f)}: {f}"
-        )
+        raise ValueError(f"{command}: expected at least {count} fields, got {len(f)}: {f}")
 
 def parse_hop(response):
     f = fields(response)
@@ -170,7 +189,7 @@ COMMANDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Serial communication mit dynamischer CRC
+# Serial communication & CRC
 # ---------------------------------------------------------------------------
 
 def crc_pi30(command):
@@ -194,7 +213,8 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE")):
+    # CRC für alle Steuerbefehle anhängen
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE", "V", "FUL", "PBD", "PBC", "BVC", "BVF", "CUT")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -211,7 +231,6 @@ def query(ser, command):
         return response.decode("ascii", errors="ignore")
     except Exception as e:
         raise ValueError(f"{command}: decode error {e}")
-
 
 def poll_inverter(ser):
     result = {}
@@ -238,7 +257,7 @@ def poll_inverter(ser):
     return result, successful
 
 # ---------------------------------------------------------------------------
-# Home Assistant MQTT discovery & Callbacks
+# MQTT Callbacks
 # ---------------------------------------------------------------------------
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -252,10 +271,9 @@ def on_message(client, userdata, msg):
     print(f"Received command: {msg.topic} -> {payload}")
 
 # ---------------------------------------------------------------------------
-# SENSORS & SELECTS
+# SENSORS, SELECTS & NUMBERS
 # ---------------------------------------------------------------------------
 SENSORS = {
-    # Output
     "output_voltage": {"name": "Output voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "output_frequency": {"name": "Output frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
     "output_apparent_power": {"name": "Output apparent power", "unit": "VA", "device_class": "apparent_power", "state_class": "measurement"},
@@ -265,74 +283,50 @@ SENSORS = {
     "dc_bus_voltage": {"name": "DC bus voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "rated_power": {"name": "Rated power", "unit": "VA", "entity_category": "diagnostic"},
     
-    # Grid
     "grid_voltage": {"name": "Grid voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "grid_frequency": {"name": "Grid frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
     "grid_active_power": {"name": "Netzleistung (Bezug/Einspeisung)", "unit": "W", "device_class": "power", "state_class": "measurement"},
     
-    # Battery
     "battery_voltage": {"name": "Battery voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "battery_capacity": {"name": "Battery capacity", "unit": "%", "device_class": "battery", "state_class": "measurement"},
     
-    # PV
     "pv_voltage": {"name": "PV voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "pv_current": {"name": "PV current", "unit": "A", "device_class": "current", "state_class": "measurement"},
     "pv_power": {"name": "PV power", "unit": "W", "device_class": "power", "state_class": "measurement"},
     
-    # Temperatures
     "pv_temperature": {"name": "PV temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     "inverter_temperature": {"name": "Inverter temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     "boost_temperature": {"name": "Boost temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     
-    # Generation
     "pv_energy_today": {"name": "PV energy today", "unit": "kWh", "device_class": "energy", "state_class": "total"},
     "pv_energy_total": {"name": "PV energy total", "unit": "kWh", "device_class": "energy", "state_class": "total_increasing"},
     
-    # Diagnostics
     "output_status_code": {"name": "Output status code", "entity_category": "diagnostic"},
     "software_version": {"name": "Software version", "entity_category": "diagnostic"},
 }
 
 SELECTS = {
-    "output_priority": {
-        "name": "Menü 01: Ausgangspriorität",
-        "options": ["SUB", "SBU", "SUF", "PEC"],
-        "icon": "mdi:power-flow"
-    },
-    "charger_priority": {
-        "name": "Menü 16: Ladequelle",
-        "options": ["CSO", "SNU", "0S0", "Sot"],
-        "icon": "mdi:battery-charging"
-    },
-    "ac_input_range": {
-        "name": "Menü 03: AC Eingang",
-        "options": ["Appliance (APL)", "UPS"],
-        "icon": "mdi:current-ac"
-    },
-    "max_utility_charge_current": {
-        "name": "Menü 11: Netz-Ladestrom",
-        "options": ["2A", "10A", "20A", "30A"],
-        "icon": "mdi:current-dc"
-    },
-    "max_total_charge_current": {
-        "name": "Menü 02: Gesamt-Ladestrom",
-        "options": ["10A", "20A", "30A", "40A", "50A", "60A"],
-        "icon": "mdi:battery-charging-high"
-    },
-    "eco_mode": {
-        "name": "Menü 08: ECO Modus",
-        "options": ["Enable", "Disable"],
-        "icon": "mdi:leaf"
-    }
+    "output_priority": {"name": "Menü 01: Ausgangspriorität", "options": ["SUB", "SBU", "SUF", "PEC"], "icon": "mdi:power-flow"},
+    "charger_priority": {"name": "Menü 16: Ladequelle", "options": ["CSO", "SNU", "0S0", "Sot"], "icon": "mdi:battery-charging"},
+    "ac_input_range": {"name": "Menü 03: AC Eingang", "options": ["Appliance (APL)", "UPS"], "icon": "mdi:current-ac"},
+    "max_utility_charge_current": {"name": "Menü 11: Netz-Ladestrom", "options": ["2A", "10A", "20A", "30A"], "icon": "mdi:current-dc"},
+    "max_total_charge_current": {"name": "Menü 02: Gesamt-Ladestrom", "options": ["10A", "20A", "30A", "40A", "50A", "60A"], "icon": "mdi:battery-charging-high"},
+    "eco_mode": {"name": "Menü 08: ECO Modus", "options": ["Enable", "Disable"], "icon": "mdi:leaf"},
+}
+
+# NEU: Number-Entitäten für Spannungs- und Schwellenwert-Menüs
+NUMBERS = {
+    "back_to_grid_voltage": {"name": "Menü 12: SBU Rückkehr zum Netz", "min": 22.0, "max": 25.5, "step": 0.5, "unit": "V", "icon": "mdi:flash-alert"},
+    "back_to_battery_voltage": {"name": "Menü 13: SBU Rückkehr zur Batterie", "min": 24.0, "max": 29.0, "step": 0.5, "unit": "V", "icon": "mdi:battery-arrow-up"},
+    "battery_reboot_voltage": {"name": "Menü 17: Batterie Neustart-Spannung", "min": 20.0, "max": 27.0, "step": 0.1, "unit": "V", "icon": "mdi:restart"},
+    "battery_low_voltage": {"name": "Menü 24: Batterie Low Voltage Alarm", "min": 20.0, "max": 27.0, "step": 0.1, "unit": "V", "icon": "mdi:battery-alert"},
+    "bulk_charging_voltage": {"name": "Menü 26: Bulk Ladespannung (CV)", "min": 24.0, "max": 30.0, "step": 0.1, "unit": "V", "icon": "mdi:battery-charging-100"},
+    "floating_charging_voltage": {"name": "Menü 27: Floating Ladespannung", "min": 24.0, "max": 30.0, "step": 0.1, "unit": "V", "icon": "mdi:battery-charging-outline"},
+    "low_dc_cutoff_voltage": {"name": "Menü 29: Low DC Abschaltspannung", "min": 20.0, "max": 26.0, "step": 0.1, "unit": "V", "icon": "mdi:power-plug-off"},
 }
 
 def create_mqtt_client(args):
-    try:
-        import paho.mqtt.client as mqtt
-    except ImportError:
-        print("MQTT mode requires paho-mqtt", file=sys.stderr)
-        sys.exit(2)
-
+    import paho.mqtt.client as mqtt
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=args.device_id)
     except (AttributeError, TypeError):
@@ -363,6 +357,7 @@ def publish_discovery(client, args):
         "model": "Hybrid Inverter SMT-III",
     }
 
+    # Sensoren registrieren
     for key, sensor in SENSORS.items():
         config = {
             "name": sensor["name"],
@@ -378,6 +373,7 @@ def publish_discovery(client, args):
 
         client.publish(f"{args.discovery_prefix}/sensor/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
+    # Selects registrieren
     for key, select in SELECTS.items():
         config = {
             "name": select["name"],
@@ -392,16 +388,31 @@ def publish_discovery(client, args):
         }
         client.publish(f"{args.discovery_prefix}/select/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
-# ---------------------------------------------------------------------------
-# Command line parsing
-# ---------------------------------------------------------------------------
+    # Numbers (Spannungen) registrieren
+    for key, num in NUMBERS.items():
+        config = {
+            "name": num["name"],
+            "unique_id": f"{args.device_id}_{key}",
+            "state_topic": state_topic,
+            "command_topic": f"{args.mqtt_topic}/set/{key}",
+            "value_template": "{{ value_json." + key + " }}",
+            "min": num["min"],
+            "max": num["max"],
+            "step": num["step"],
+            "unit_of_measurement": num["unit"],
+            "icon": num["icon"],
+            "availability_topic": availability_topic,
+            "device": device,
+        }
+        client.publish(f"{args.discovery_prefix}/number/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Read/Write EASUN SMT-III inverter over RS232")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--stdout", action="store_true", help="Print readings to stdout")
     mode.add_argument("--mqtt", action="store_true", help="Publish readings via MQTT")
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port (default: /dev/ttyUSB0)")
-    parser.add_argument("--interval", type=float, default=10.0, help="Polling interval in seconds")
+    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port")
+    parser.add_argument("--interval", type=float, default=10.0, help="Polling interval")
     parser.add_argument("--once", action="store_true", help="Read once and exit")
     parser.add_argument("--mqtt-host")
     parser.add_argument("--mqtt-port", type=int, default=1883)
@@ -411,28 +422,29 @@ def parse_args():
     parser.add_argument("--discovery-prefix", default="homeassistant")
     parser.add_argument("--device-id", default="easun_inverter")
     parser.add_argument("--device-name", default="EASUN Inverter")
-    args = parser.parse_args()
-    if args.mqtt and not args.mqtt_host:
-        parser.error("--mqtt requires --mqtt-host")
-    return args
+    return parser.parse_args()
 
-# ---------------------------------------------------------------------------
-# Main Loop
-# ---------------------------------------------------------------------------
 def main():
     args = parse_args()
     mqtt_client = create_mqtt_client(args) if args.mqtt else None
     if mqtt_client:
         publish_discovery(mqtt_client, args)
 
-    # Initialer Zustand mit funktionierenden Standardwerten belegt, damit kein "unknown" erscheint
     state = {
         "output_priority": "SUB",
         "charger_priority": "SNU",
         "ac_input_range": "Appliance (APL)",
         "max_utility_charge_current": "20A",
         "max_total_charge_current": "50A",
-        "eco_mode": "Disable"
+        "eco_mode": "Disable",
+        # Standard-Werte für die Spannungen (24V Standard)
+        "back_to_grid_voltage": 23.0,
+        "back_to_battery_voltage": 27.0,
+        "battery_reboot_voltage": 23.5,
+        "battery_low_voltage": 21.0,
+        "bulk_charging_voltage": 28.2,
+        "floating_charging_voltage": 27.0,
+        "low_dc_cutoff_voltage": 21.0,
     }
 
     try:
@@ -446,8 +458,16 @@ def main():
                     command_key = topic.split("/")[-1]
                     
                     rs232_cmd = None
-                    if command_key in COMMAND_MAP and payload in COMMAND_MAP[command_key]:
-                        rs232_cmd = COMMAND_MAP[command_key][payload]
+                    # Prüfen ob es ein Select oder Number Befehl ist
+                    if command_key in COMMAND_MAP:
+                        mapping = COMMAND_MAP[command_key]
+                        if callable(mapping):
+                            try:
+                                rs232_cmd = mapping(payload)
+                            except Exception as ex:
+                                print(f"Fehler beim Generieren des Befehls für {command_key}: {ex}")
+                        elif payload in mapping:
+                            rs232_cmd = mapping[payload]
 
                     if rs232_cmd:
                         try:
@@ -455,7 +475,10 @@ def main():
                             response = query(ser, rs232_cmd)
                             print(f"Antwort: {response}")
                             if "ACK" in response:
-                                state[command_key] = payload
+                                if command_key in NUMBERS:
+                                    state[command_key] = float(payload)
+                                else:
+                                    state[command_key] = payload
                         except Exception as e:
                             print(f"Fehler beim Senden von {rs232_cmd}: {e}")
                     else:
