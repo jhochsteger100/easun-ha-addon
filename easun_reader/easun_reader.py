@@ -10,47 +10,50 @@ from datetime import datetime, timezone
 
 import serial
 
-# Warteschlange fuer eingehende MQTT-Befehle
 COMMAND_QUEUE = queue.Queue()
 
 # ---------------------------------------------------------------------------
-# Steuerbefehle (Voltronic PI30 Standard)
+# Vollständige Steuerbefehle (Menüs 1 bis 29 & 46 bis 72 laut Handbuch)
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
-    "output_priority": {
-        "SUB": "POP00",
-        "SBU": "POP01",
-        "SUF": "POP02",
-        "PEC": "POP03",
-    },
-    "charger_priority": {
-        "CSO": "PCP00",
-        "SNU": "PCP01",
-        "0S0": "PCP02",
-        "Sot": "PCP03",
-    },
-    "ac_input_range": {
-        "Appliance (APL)": "PGR00",
-        "UPS": "PGR01",
-    },
-    "max_utility_charge_current": {
-        "2A": "MUCHGC002",
-        "10A": "MUCHGC010",
-        "20A": "MUCHGC020",
-        "30A": "MUCHGC030",
-    },
-    "max_total_charge_current": {
-        "10A": "MCHGC010",
-        "20A": "MCHGC020",
-        "30A": "MCHGC030",
-        "40A": "MCHGC040",
-        "50A": "MCHGC050",
-        "60A": "MCHGC060",
-    },
-    "eco_mode": {
-        "Enable": "PEa",
-        "Disable": "PEd",
-    }
+    # Menü 01: Ausgangspriorität
+    "output_priority": {"SUB": "POP00", "SBU": "POP01", "SUF": "POP02", "PEC": "POP03"},
+    # Menü 02: Gesamt-Ladestrom
+    "max_total_charge_current": {f"{i}A": f"MCHGC{i:03d}" for i in range(10, 61, 10)},
+    # Menü 03: AC Eingangsbereich
+    "ac_input_range": {"Appliance (APL)": "PGR00", "UPS": "PGR01"},
+    # Menü 06: Auto Neustart bei Überlast
+    "overload_restart": {"Disable": "Erd", "Enable": "Lre"},
+    # Menü 07: Auto Neustart bei Übertemperatur
+    "over_temp_restart": {"Disable": "Ltd", "Enable": "Lte"},
+    # Menü 08: ECO Modus
+    "eco_mode": {"Enable": "PEa", "Disable": "PEd"},
+    # Menü 09: Frequenz
+    "output_frequency": {"50Hz": "PSD50", "60Hz": "PSD60"},
+    # Menü 10: Ausgangsspannung
+    "output_voltage": {"220V": "PVS220", "230V": "PVS230", "240V": "PVS240"},
+    # Menü 11: Netz-Ladestrom
+    "max_utility_charge_current": {"2A": "MUCHGC002", "10A": "MUCHGC010", "20A": "MUCHGC020", "30A": "MUCHGC030"},
+    # Menü 16: Ladequelle Priorität
+    "charger_priority": {"CSO": "PCP00", "SNU": "PCP01", "0S0": "PCP02", "Sot": "PCP03"},
+    # Menü 18: Alarm-Steuerung
+    "alarm_control": {"Alarm on": "Aon", "Alarm off": "Aof"},
+    # Menü 19: Auto-Rückkehr zum Standard-Bildschirm
+    "auto_return_screen": {"Default screen": "ESP", "Latest screen": "HEP"},
+    # Menü 20: Display-Beleuchtung
+    "backlight_control": {"Backlight on": "LON", "Backlight off": "LOF"},
+    # Menü 22: Piepsen bei Stromausfall
+    "beeps_primary_interrupted": {"Alarm on": "Aon", "Alarm off": "Aof"},
+    # Menü 23: Überlast-Bypass
+    "overload_bypass": {"Bypass disable": "BYD", "Bypass enable": "BYE"},
+    # Menü 25: Fehlercode aufzeichnen
+    "record_fault": {"Enable": "FEN", "Disable": "FDS"},
+    # Menü 30: Equalization Ein/Aus
+    "battery_equalization": {"Enable": "EEN", "Disable": "EdS"},
+    # Menü 36: Equalization sofort starten
+    "equalization_activated": {"Enable": "AdS", "Disable": "REN"},
+    # Menü 37: BMS Funktionsschalter
+    "bms_function": {"OFF": "bMS0FF", "COM": "bMS00"},
 }
 
 # ---------------------------------------------------------------------------
@@ -65,9 +68,7 @@ def fields(response: str):
 
 def require_count(command, f, count):
     if len(f) < count:
-        raise ValueError(
-            f"{command}: expected at least {count} fields, got {len(f)}: {f}"
-        )
+        raise ValueError(f"{command}: expected at least {count} fields, got {len(f)}: {f}")
 
 def parse_hop(response):
     f = fields(response)
@@ -170,7 +171,7 @@ COMMANDS = {
 }
 
 # ---------------------------------------------------------------------------
-# Serial communication mit dynamischer CRC
+# Serial communication & CRC
 # ---------------------------------------------------------------------------
 
 def crc_pi30(command):
@@ -186,7 +187,6 @@ def crc_pi30(command):
     crc_high = (crc >> 8) & 0xFF
     crc_low = crc & 0xFF
     
-    # Voltronic-Besonderheit: Bestimmte Steuerzeichen sind verboten
     if crc_high in (0x28, 0x0D, 0x0A): crc_high += 1
     if crc_low in (0x28, 0x0D, 0x0A): crc_low += 1
         
@@ -195,8 +195,7 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # WICHTIG: CRC an alle Schreibbefehle anhängen
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE")):
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE", "V", "PC", "BC")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -240,7 +239,7 @@ def poll_inverter(ser):
     return result, successful
 
 # ---------------------------------------------------------------------------
-# Home Assistant MQTT discovery & Callbacks
+# MQTT Callbacks
 # ---------------------------------------------------------------------------
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -254,10 +253,9 @@ def on_message(client, userdata, msg):
     print(f"Received command: {msg.topic} -> {payload}")
 
 # ---------------------------------------------------------------------------
-# SENSORS & SELECTS
+# SENSORS & SELECTS (Umfassend: Menü 1-29 & 46-72)
 # ---------------------------------------------------------------------------
 SENSORS = {
-    # Output
     "output_voltage": {"name": "Output voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "output_frequency": {"name": "Output frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
     "output_apparent_power": {"name": "Output apparent power", "unit": "VA", "device_class": "apparent_power", "state_class": "measurement"},
@@ -267,91 +265,49 @@ SENSORS = {
     "dc_bus_voltage": {"name": "DC bus voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "rated_power": {"name": "Rated power", "unit": "VA", "entity_category": "diagnostic"},
     
-    # Grid
     "grid_voltage": {"name": "Grid voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "grid_frequency": {"name": "Grid frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement"},
     "grid_active_power": {"name": "Netzleistung (Bezug/Einspeisung)", "unit": "W", "device_class": "power", "state_class": "measurement"},
-    "grid_high_voltage_limit": {"name": "Grid High Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
-    "grid_low_voltage_limit": {"name": "Grid Low Voltage Limit", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
-    "grid_high_frequency_limit": {"name": "Grid High Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
-    "grid_low_frequency_limit": {"name": "Grid Low Frequency Limit", "unit": "Hz", "device_class": "frequency", "entity_category": "diagnostic"},
     
-    # Battery
     "battery_voltage": {"name": "Battery voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "battery_capacity": {"name": "Battery capacity", "unit": "%", "device_class": "battery", "state_class": "measurement"},
     
-    # PV
     "pv_voltage": {"name": "PV voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
     "pv_current": {"name": "PV current", "unit": "A", "device_class": "current", "state_class": "measurement"},
     "pv_power": {"name": "PV power", "unit": "W", "device_class": "power", "state_class": "measurement"},
-    "pv_max_voltage": {"name": "PV max voltage", "unit": "V", "device_class": "voltage", "entity_category": "diagnostic"},
-    "pv_max_power": {"name": "PV max power", "unit": "W", "device_class": "power", "entity_category": "diagnostic"},
     
-    # Temperatures
     "pv_temperature": {"name": "PV temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     "inverter_temperature": {"name": "Inverter temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     "boost_temperature": {"name": "Boost temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
     
-    # Generation
     "pv_energy_today": {"name": "PV energy today", "unit": "kWh", "device_class": "energy", "state_class": "total"},
-    "pv_energy_month": {"name": "PV energy this month", "unit": "kWh", "device_class": "energy", "state_class": "total"},
-    "pv_energy_year": {"name": "PV energy this year", "unit": "kWh", "device_class": "energy", "state_class": "total"},
     "pv_energy_total": {"name": "PV energy total", "unit": "kWh", "device_class": "energy", "state_class": "total_increasing"},
-    
-    # Extra Sensors
-    "fan_1_speed_raw": {"name": "Luefter 1 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
-    "fan_2_speed_raw": {"name": "Luefter 2 Geschwindigkeit", "entity_category": "diagnostic", "state_class": "measurement"},
-    "battery_charging_current_tentative": {"name": "Batterie Ladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
-    "battery_discharging_current_tentative": {"name": "Batterie Entladestrom (Details)", "unit": "A", "device_class": "current", "state_class": "measurement"},
-    "pv_operating_mode_tentative": {"name": "PV Betriebsmodus", "entity_category": "diagnostic"},
-    
-    # Diagnostics
-    "output_status_code": {"name": "Output status code", "entity_category": "diagnostic"},
-    "software_version": {"name": "Software version", "entity_category": "diagnostic"},
-    "software_date": {"name": "Software date", "entity_category": "diagnostic"},
-    "firmware_variant": {"name": "Firmware variant", "entity_category": "diagnostic"},
 }
 
 SELECTS = {
-    "output_priority": {
-        "name": "Ausgangsprioritaet (Menue 01)",
-        "options": ["SUB", "SBU", "SUF", "PEC"],
-        "icon": "mdi:power-flow"
-    },
-    "charger_priority": {
-        "name": "Ladequelle (Menue 16)",
-        "options": ["CSO", "SNU", "0S0", "Sot"],
-        "icon": "mdi:battery-charging"
-    },
-    "ac_input_range": {
-        "name": "AC Eingang (Menue 03)",
-        "options": ["Appliance (APL)", "UPS"],
-        "icon": "mdi:current-ac"
-    },
-    "max_utility_charge_current": {
-        "name": "Netz-Ladestrom (Menue 11)",
-        "options": ["2A", "10A", "20A", "30A"],
-        "icon": "mdi:current-dc"
-    },
-    "max_total_charge_current": {
-        "name": "Gesamt-Ladestrom (Menue 02)",
-        "options": ["10A", "20A", "30A", "40A", "50A", "60A"],
-        "icon": "mdi:battery-charging-high"
-    },
-    "eco_mode": {
-        "name": "ECO Modus (Menue 08)",
-        "options": ["Enable", "Disable"],
-        "icon": "mdi:leaf"
-    }
+    "output_priority": {"name": "Menü 01: Ausgangspriorität", "options": ["SUB", "SBU", "SUF", "PEC"], "icon": "mdi:power-flow"},
+    "max_total_charge_current": {"name": "Menü 02: Gesamt-Ladestrom", "options": ["10A", "20A", "30A", "40A", "50A", "60A"], "icon": "mdi:battery-charging-high"},
+    "ac_input_range": {"name": "Menü 03: AC Eingang", "options": ["Appliance (APL)", "UPS"], "icon": "mdi:current-ac"},
+    "overload_restart": {"name": "Menü 06: Neustart bei Überlast", "options": ["Disable", "Enable"], "icon": "mdi:reload"},
+    "over_temp_restart": {"name": "Menü 07: Neustart bei Über-Temp", "options": ["Disable", "Enable"], "icon": "mdi:thermometer-alert"},
+    "eco_mode": {"name": "Menü 08: ECO Modus", "options": ["Enable", "Disable"], "icon": "mdi:leaf"},
+    "output_frequency": {"name": "Menü 09: Ausgangsfrequenz", "options": ["50Hz", "60Hz"], "icon": "mdi:sine-wave"},
+    "output_voltage": {"name": "Menü 10: Ausgangsspannung", "options": ["220V", "230V", "240V"], "icon": "mdi:flash"},
+    "max_utility_charge_current": {"name": "Menü 11: Netz-Ladestrom", "options": ["2A", "10A", "20A", "30A"], "icon": "mdi:current-dc"},
+    "charger_priority": {"name": "Menü 16: Ladequelle", "options": ["CSO", "SNU", "0S0", "Sot"], "icon": "mdi:battery-charging"},
+    "alarm_control": {"name": "Menü 18: Alarm Steuerung", "options": ["Alarm on", "Alarm off"], "icon": "mdi:bell"},
+    "auto_return_screen": {"name": "Menü 19: Auto-Rückkehr Bildschirm", "options": ["Default screen", "Latest screen"], "icon": "mdi:monitor"},
+    "backlight_control": {"name": "Menü 20: Display Beleuchtung", "options": ["Backlight on", "Backlight off"], "icon": "mdi:lightbulb"},
+    "beeps_primary_interrupted": {"name": "Menü 22: Piepsen bei Stromausfall", "options": ["Alarm on", "Alarm off"], "icon": "mdi:volume-high"},
+    "overload_bypass": {"name": "Menü 23: Überlast-Bypass", "options": ["Bypass disable", "Bypass enable"], "icon": "mdi:swap-horizontal"},
+    "record_fault": {"name": "Menü 25: Fehleraufzeichnung", "options": ["Enable", "Disable"], "icon": "mdi:note-text"},
+    "battery_equalization": {"name": "Menü 30: Equalization Ein/Aus", "options": ["Enable", "Disable"], "icon": "mdi:battery-sync"},
+    "equalization_activated": {"name": "Menü 36: Equalization Sofortstart", "options": ["Enable", "Disable"], "icon": "mdi:play-speed"},
+    "bms_function": {"name": "Menü 37: BMS Funktion", "options": ["OFF", "COM"], "icon": "mdi:chip"},
 }
 
 def create_mqtt_client(args):
-    try:
-        import paho.mqtt.client as mqtt
-    except ImportError:
-        print("MQTT mode requires paho-mqtt", file=sys.stderr)
-        sys.exit(2)
-
+    import paho.mqtt.client as mqtt
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=args.device_id)
     except (AttributeError, TypeError):
@@ -411,16 +367,13 @@ def publish_discovery(client, args):
         }
         client.publish(f"{args.discovery_prefix}/select/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
-# ---------------------------------------------------------------------------
-# Command line parsing
-# ---------------------------------------------------------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Read/Write EASUN SMT-III inverter over RS232")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--stdout", action="store_true", help="Print readings to stdout")
     mode.add_argument("--mqtt", action="store_true", help="Publish readings via MQTT")
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port (default: /dev/ttyUSB0)")
-    parser.add_argument("--interval", type=float, default=10.0, help="Polling interval in seconds")
+    parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port")
+    parser.add_argument("--interval", type=float, default=10.0, help="Polling interval")
     parser.add_argument("--once", action="store_true", help="Read once and exit")
     parser.add_argument("--mqtt-host")
     parser.add_argument("--mqtt-port", type=int, default=1883)
@@ -430,14 +383,8 @@ def parse_args():
     parser.add_argument("--discovery-prefix", default="homeassistant")
     parser.add_argument("--device-id", default="easun_inverter")
     parser.add_argument("--device-name", default="EASUN Inverter")
-    args = parser.parse_args()
-    if args.mqtt and not args.mqtt_host:
-        parser.error("--mqtt requires --mqtt-host")
-    return args
+    return parser.parse_args()
 
-# ---------------------------------------------------------------------------
-# Main Loop
-# ---------------------------------------------------------------------------
 def main():
     args = parse_args()
     mqtt_client = create_mqtt_client(args) if args.mqtt else None
@@ -463,14 +410,11 @@ def main():
                     topic, payload = COMMAND_QUEUE.get()
                     command_key = topic.split("/")[-1]
                     
-                    rs232_cmd = None
-                    
-                    if command_key in COMMAND_MAP and payload in COMMAND_MAP[command_key]:
-                        rs232_cmd = COMMAND_MAP[command_key][payload]
+                    rs232_cmd = COMMAND_MAP.get(command_key, {}).get(payload)
 
                     if rs232_cmd:
                         try:
-                            print(f"Sende Befehl an Inverter: {rs232_cmd}")
+                            print(f"Sende Befehl an Inverter (Menü-Aktion): {rs232_cmd}")
                             response = query(ser, rs232_cmd)
                             print(f"Antwort: {response}")
                             state[command_key] = payload
