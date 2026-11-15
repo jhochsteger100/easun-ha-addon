@@ -1,3 +1,4 @@
+#!/usr/init/env python3
 #!/usr/bin/env python3
 
 import argparse
@@ -10,40 +11,34 @@ from datetime import datetime, timezone
 
 import serial
 
-# Warteschlange fuer eingehende MQTT-Befehle
 COMMAND_QUEUE = queue.Queue()
 
 # ---------------------------------------------------------------------------
-# Steuerbefehle (Inklusive Spannungen & Schwellenwerte für 24V-System)
+# Steuerbefehle (Nur funktionierende PI30 Befehle für Menüs 1, 2, 3, 8, 11, 16 + Spannungen)
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
-    # Menü 01: Ausgangspriorität
     "output_priority": {
         "SUB": "POP00",
         "SBU": "POP01",
         "SUF": "POP02",
         "PEC": "POP03",
     },
-    # Menü 16: Ladequelle
     "charger_priority": {
         "CSO": "PCP00",
         "SNU": "PCP01",
         "0S0": "PCP02",
         "Sot": "PCP03",
     },
-    # Menü 03: AC Eingang
     "ac_input_range": {
         "Appliance (APL)": "PGR00",
         "UPS": "PGR01",
     },
-    # Menü 11: Netz-Ladestrom
     "max_utility_charge_current": {
         "2A": "MUCHGC002",
         "10A": "MUCHGC010",
         "20A": "MUCHGC020",
         "30A": "MUCHGC030",
     },
-    # Menü 02: Gesamt-Ladestrom
     "max_total_charge_current": {
         "10A": "MCHGC010",
         "20A": "MCHGC020",
@@ -52,25 +47,17 @@ COMMAND_MAP = {
         "50A": "MCHGC050",
         "60A": "MCHGC060",
     },
-    # Menü 08: ECO Modus
     "eco_mode": {
         "Enable": "PEa",
         "Disable": "PEd",
     },
-    # --- NEU: Spannungen & Schwellenwerte (Beispielhafte Befehlsstruktur für 24V) ---
-    # Menü 12: Rückkehrspannung zu Netz bei SBU (z.B. V0230 für 23.0V)
+    # Spannungs- und Schwellenwerte (Menüs 12, 13, 17, 24, 26, 27, 29)
     "back_to_grid_voltage": lambda val: f"V{int(float(val)*10):04d}",
-    # Menü 13: Rückkehrspannung zu Batterie (z.B. VIC0270 für 27.0V)
     "back_to_battery_voltage": lambda val: f"FUL{int(float(val)*10):03d}",
-    # Menü 17: Battery reboot voltage (z.B. PBD...)
     "battery_reboot_voltage": lambda val: f"PBD{int(float(val)*10):03d}",
-    # Menü 24: Battery low voltage
     "battery_low_voltage": lambda val: f"PBC{int(float(val)*10):03d}",
-    # Menü 26: Bulk charging voltage (C.V. voltage)
     "bulk_charging_voltage": lambda val: f"BVC{int(float(val)*10):03d}",
-    # Menü 27: Floating charging voltage
     "floating_charging_voltage": lambda val: f"BVF{int(float(val)*10):03d}",
-    # Menü 29: Low DC cut-off voltage
     "low_dc_cutoff_voltage": lambda val: f"CUT{int(float(val)*10):03d}",
 }
 
@@ -213,7 +200,6 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    # CRC für alle Steuerbefehle anhängen
     if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE", "V", "FUL", "PBD", "PBC", "BVC", "BVF", "CUT")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
@@ -271,7 +257,7 @@ def on_message(client, userdata, msg):
     print(f"Received command: {msg.topic} -> {payload}")
 
 # ---------------------------------------------------------------------------
-# SENSORS, SELECTS & NUMBERS
+# SENSORS, SELECTS & NUMBERS (Bereinigt von "unknown" Entitäten)
 # ---------------------------------------------------------------------------
 SENSORS = {
     "output_voltage": {"name": "Output voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
@@ -314,7 +300,7 @@ SELECTS = {
     "eco_mode": {"name": "Menü 08: ECO Modus", "options": ["Enable", "Disable"], "icon": "mdi:leaf"},
 }
 
-# NEU: Number-Entitäten für Spannungs- und Schwellenwert-Menüs
+# Numbers mit "mode": "box" für reines Eingabefeld statt Slider
 NUMBERS = {
     "back_to_grid_voltage": {"name": "Menü 12: SBU Rückkehr zum Netz", "min": 22.0, "max": 25.5, "step": 0.5, "unit": "V", "icon": "mdi:flash-alert"},
     "back_to_battery_voltage": {"name": "Menü 13: SBU Rückkehr zur Batterie", "min": 24.0, "max": 29.0, "step": 0.5, "unit": "V", "icon": "mdi:battery-arrow-up"},
@@ -357,7 +343,6 @@ def publish_discovery(client, args):
         "model": "Hybrid Inverter SMT-III",
     }
 
-    # Sensoren registrieren
     for key, sensor in SENSORS.items():
         config = {
             "name": sensor["name"],
@@ -373,7 +358,6 @@ def publish_discovery(client, args):
 
         client.publish(f"{args.discovery_prefix}/sensor/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
-    # Selects registrieren
     for key, select in SELECTS.items():
         config = {
             "name": select["name"],
@@ -388,7 +372,7 @@ def publish_discovery(client, args):
         }
         client.publish(f"{args.discovery_prefix}/select/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
-    # Numbers (Spannungen) registrieren
+    # Hier wird "mode": "box" gesetzt, damit Home Assistant ein Eingabefeld statt eines Sliders anzeigt
     for key, num in NUMBERS.items():
         config = {
             "name": num["name"],
@@ -399,6 +383,7 @@ def publish_discovery(client, args):
             "min": num["min"],
             "max": num["max"],
             "step": num["step"],
+            "mode": "box",
             "unit_of_measurement": num["unit"],
             "icon": num["icon"],
             "availability_topic": availability_topic,
@@ -437,7 +422,6 @@ def main():
         "max_utility_charge_current": "20A",
         "max_total_charge_current": "50A",
         "eco_mode": "Disable",
-        # Standard-Werte für die Spannungen (24V Standard)
         "back_to_grid_voltage": 23.0,
         "back_to_battery_voltage": 27.0,
         "battery_reboot_voltage": 23.5,
@@ -458,7 +442,6 @@ def main():
                     command_key = topic.split("/")[-1]
                     
                     rs232_cmd = None
-                    # Prüfen ob es ein Select oder Number Befehl ist
                     if command_key in COMMAND_MAP:
                         mapping = COMMAND_MAP[command_key]
                         if callable(mapping):
