@@ -1,4 +1,3 @@
-#!/usr/init/env python3
 #!/usr/bin/env python3
 
 import argparse
@@ -14,7 +13,7 @@ import serial
 COMMAND_QUEUE = queue.Queue()
 
 # ---------------------------------------------------------------------------
-# Steuerbefehle (Nur funktionierende PI30 Befehle für Menüs 1, 2, 3, 8, 11, 16 + Spannungen)
+# Steuerbefehle (Korrigierte PI30 Befehle inklusive korrekter Ladespannungen)
 # ---------------------------------------------------------------------------
 COMMAND_MAP = {
     "output_priority": {
@@ -56,8 +55,8 @@ COMMAND_MAP = {
     "back_to_battery_voltage": lambda val: f"FUL{int(float(val)*10):03d}",
     "battery_reboot_voltage": lambda val: f"PBD{int(float(val)*10):03d}",
     "battery_low_voltage": lambda val: f"PBC{int(float(val)*10):03d}",
-    "bulk_charging_voltage": lambda val: f"BVC{int(float(val)*10):03d}",
-    "floating_charging_voltage": lambda val: f"BVF{int(float(val)*10):03d}",
+    "bulk_charging_voltage": lambda val: f"BUHV{int(float(val)*10):03d}",      # Korrigiert von BVC auf BUHV
+    "floating_charging_voltage": lambda val: f"BFV{int(float(val)*10):03d}",    # Korrigiert von BVF auf BFV
     "low_dc_cutoff_voltage": lambda val: f"CUT{int(float(val)*10):03d}",
 }
 
@@ -200,7 +199,8 @@ def crc_pi30(command):
 def query(ser, command):
     ser.reset_input_buffer()
     
-    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE", "V", "FUL", "PBD", "PBC", "BVC", "BVF", "CUT")):
+    # Aktualisierte Befehlspräfixe mit CRC-Berechnung inklusive BUHV und BFV
+    if command.startswith(("POP", "PCP", "PGR", "MUCH", "MCHG", "PE", "V", "FUL", "PBD", "PBC", "BUHV", "BFV", "CUT")):
         crc_bytes = crc_pi30(command)
         request = command.encode("ascii") + crc_bytes + b"\r"
     else:
@@ -257,7 +257,7 @@ def on_message(client, userdata, msg):
     print(f"Received command: {msg.topic} -> {payload}")
 
 # ---------------------------------------------------------------------------
-# SENSORS, SELECTS & NUMBERS (Bereinigt von "unknown" Entitäten)
+# SENSORS, SELECTS & NUMBERS
 # ---------------------------------------------------------------------------
 SENSORS = {
     "output_voltage": {"name": "Output voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
@@ -300,7 +300,6 @@ SELECTS = {
     "eco_mode": {"name": "Menü 08: ECO Modus", "options": ["Enable", "Disable"], "icon": "mdi:leaf"},
 }
 
-# Numbers mit "mode": "box" für reines Eingabefeld statt Slider
 NUMBERS = {
     "back_to_grid_voltage": {"name": "Menü 12: SBU Rückkehr zum Netz", "min": 22.0, "max": 25.5, "step": 0.5, "unit": "V", "icon": "mdi:flash-alert"},
     "back_to_battery_voltage": {"name": "Menü 13: SBU Rückkehr zur Batterie", "min": 24.0, "max": 29.0, "step": 0.5, "unit": "V", "icon": "mdi:battery-arrow-up"},
@@ -372,7 +371,6 @@ def publish_discovery(client, args):
         }
         client.publish(f"{args.discovery_prefix}/select/{args.device_id}/{key}/config", json.dumps(config), qos=1, retain=True)
 
-    # Hier wird "mode": "box" gesetzt, damit Home Assistant ein Eingabefeld statt eines Sliders anzeigt
     for key, num in NUMBERS.items():
         config = {
             "name": num["name"],
@@ -426,8 +424,8 @@ def main():
         "back_to_battery_voltage": 27.0,
         "battery_reboot_voltage": 23.5,
         "battery_low_voltage": 21.0,
-        "bulk_charging_voltage": 28.2,
-        "floating_charging_voltage": 27.0,
+        "bulk_charging_voltage": 28.8,    # Empfohlener Startwert gemäß Anleitung
+        "floating_charging_voltage": 27.2, # Empfohlener Startwert gemäß Anleitung
         "low_dc_cutoff_voltage": 21.0,
     }
 
